@@ -97,7 +97,7 @@ q_out[r] = floor( min(
 
 各上限は次で定義する。レシピ `r` は産出1単位あたりの投入係数 `a[r][asset]`(整数または有理数。実装は分子分母の整数対で保持し floor で確定) を持つ。
 
-- **設備上限**: `L_cap = capacity[firm] × utilization_max`。`capacity` は企業の資本ストック (10.7) が定める単位ターンあたり最大産出能力。`utilization_max`(既定 1.0) は瞬間的な過負荷を許す場合のみ >1。`capacity` はレシピ非依存の総能力で、複数レシピを持つ企業は能力配分ベクトル `alloc[r]`(Σ=1, 提出計画で指定) により `L_cap[r] = floor(capacity × alloc[r])` と分割する。
+- **設備上限**: `L_cap = capacity[firm] × utilization_max`。`capacity` は企業の資本ストック (10.7) が定める単位ターンあたり最大産出能力。`utilization_max`(既定 1.0) は瞬間的な過負荷を許す場合のみ >1。`capacity` はレシピ非依存の総能力で、複数レシピを持つ企業は能力配分ベクトル `alloc[r]`(Σ≤1, 提出計画で指定。10.8.2 と同一。未割当分は遊休能力) により `L_cap[r] = floor(capacity × alloc[r])` と分割する。
 - **労働上限**: `L_labor = min over k of floor( held_labor[firm][labor.k] / a[r][labor.k] )`(レシピが要求する各労働種別 `labor.k` のうち最も不足するもの)。`held_labor` は当ターン P4 で購入した量。`labor.*` は perishable のため繰越在庫はゼロ (0.5.3)。
 - **投入材上限**: `L_input = min over m of floor( held_input[firm][m] / a[r][m] )`(レシピが要求する各素材 `m`(`mat/raw/agri/energy/good`) のうち最も不足するもの)。`held_input` は繰越在庫 + 当ターン P4 購入分。
 - **地域上限**: 抽出系 (`AGRICULTURE`/`MINING`) のみ `L_region = region_share[firm][asset_out]`(10.6 で按分された当ターンの取り分)。`ENERGY` を含む非抽出系は `L_region = +∞`。

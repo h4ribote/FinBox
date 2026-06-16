@@ -87,7 +87,7 @@ erDiagram
 | フィールド | 型 | 制約 | 説明 |
 | --- | --- | --- | --- |
 | `country_code` | `str` | 3文字大文字, 一意 | [00 §0.6](00-glossary.md) |
-| `name` | `str` | — | 既定シナリオ呼称 (Aldoria 等) |
+| `name` | `str` | — | 国の表示名 (フレーバー、既定 Aldoria 等)。シード由来でプール割当可 ([16 §16.14](16-configuration-and-initialization.md))。正準IDは `country_code` |
 | `currency` | `id<Asset>` | `= CUR:<country_code>` | 法定通貨 |
 | `government_id` | `id<Government>` | `= GOV:<country_code>` | 政府 |
 | `central_bank_id` | `id<CentralBank>` | `= CB:<country_code>` | 中央銀行 |
@@ -138,11 +138,12 @@ erDiagram
 | `namespace` | `str` | `COMM` のみ (`agri/raw/energy/mat/good/labor/svc/build/mil`) | [00 §0.5.2](00-glossary.md) |
 | `perishable` | `bool` | `labor.*`/`svc.*`/`energy.electricity` は `true` | 在庫繰越不可 ([00 §0.5.3](00-glossary.md)) |
 | `storable` | `bool` | `= not perishable` | 翌ターン繰越可否 |
-| `min_unit` | `uint` | 通貨のみ意味を持つ | 価格 tick の最小通貨単位 ([00 §0.8](00-glossary.md), [16](16-configuration-and-initialization.md)) |
+| `min_unit` | `uint` | 通貨のみ意味を持つ (既定 1000) | 価格 tick の最小通貨単位 ([00 §0.8](00-glossary.md), [16](16-configuration-and-initialization.md))。表示は `internal/min_unit` を小数3桁＋3桁区切り (16 §16.3.1) |
+| `display_name` | `str?` | `CUR` 等で表示名 | 人間可読の通貨名 (フレーバー、[16 §16.14](16-configuration-and-initialization.md))。正準IDは `asset_id`、ロジック・観測の数値特徴に非依存 |
 | `issuer` | `id<Entity>?` | `BOND`/`BILL`/`EQ` で必須 | 発行体 (国債→`GOV`, 社債→`FIRM`, 株式→`FIRM`) |
-| `meta` | `map<str,int>` | クラス依存 | `BOND`: `maturity_tick`/`coupon_bps`/`face`; `EQ`: `shares_outstanding`; `FUT`: `delivery_tick` |
+| `meta` | `map<str,int>` | `FUT` および拡張資産のみ | `FUT`: `delivery_tick`。`BOND`/`BILL`/`EQ` の属性は `meta` に重複させず、正準スキーマ `Bond`(15.8)/`Equity`(15.8) を唯一の真実とする (source-of-truth 競合の回避) |
 
-不変条件: `asset_class∈{BOND,BILL}` ⇒ `issuer` は `GOV:*`(国債) または `FIRM:*`(社債)。`asset_class==EQ` ⇒ `issuer` は `FIRM:*`。資産の総量は保存され、ミント/バーンは [00 §0.10](00-glossary.md) の点でのみ生じる。
+不変条件: `asset_class∈{BOND,BILL}` ⇒ `issuer` は `GOV:*`(国債) または `FIRM:*`(社債)。`asset_class==EQ` ⇒ `issuer` は `FIRM:*`。`asset_class∈{BOND,BILL,EQ}` の銘柄属性 (額面・クーポン・満期・発行済株数等) は `Bond`/`Equity`(15.8) が正準で、`Asset.meta` には格納しない。資産の総量は保存され、ミント/バーンは [00 §0.10](00-glossary.md) の点でのみ生じる。
 
 ## 15.5 エンティティ (Entity / Agent / Firm / Government / CentralBank / Player)
 
@@ -173,6 +174,7 @@ erDiagram
 | `employer` | `id<Firm>?` | 外部キー → Firm | 雇用先 (労働市場約定で更新) |
 | `policy_net_id` | `str?` | — | 推論ポリシー識別子 ([07](07-machine-learning.md)) |
 | `birth_tick` | `uint` | — | 出生 tick (`age` の基準) |
+| `display_name` | `str?` | — | エージェントの人名 (フレーバー、[16 §16.14](16-configuration-and-initialization.md))。`names.assign_person_names=false` で `null`→`entity_id` 表示。正準IDは `entity_id` |
 | `alive` | `bool` | — | 死亡で `false` (台帳残高は相続/清算処理) |
 
 ### NeedState (15.5.1)
@@ -205,6 +207,7 @@ erDiagram
 | `recipe_ids` | `list<id<ProductionRecipe>>` | — | 運用可能なレシピ |
 | `ceo` | `id<Agent>` | `ENTREPRENEUR` ロール | 経営者 |
 | `incorporated_tick` | `uint` | — | 設立 tick |
+| `display_name` | `str` | 一意 (国群内) | 企業の人間可読名 (フレーバー)。設立時指定 ([14 §14.5.5](14-api-reference.md)) または プール割当 ([16 §16.14](16-configuration-and-initialization.md))。正準IDは `entity_id` |
 | `status` | `enum<FirmStatus>` | `{ACTIVE,SUSPENDED,LIQUIDATING,DISSOLVED}` | ライフサイクル ([10](10-industry-and-production.md)) |
 
 在庫・現金は台帳残高 (`balance[FIRM:*][*]`) として保持し、Firm に重複保持しない。
@@ -384,7 +387,7 @@ erDiagram
 | `maturity_tick` | `uint` | `> issue_tick` | 満期 tick |
 | `outstanding` | `uint` | `≥ 0` | 発行残高 (保有合計と一致) |
 
-クーポンは単利按分 `coupon_per_turn = floor(face × coupon_bps / 10000 / TURNS_PER_YEAR)` を P7 で `cause==COUPON` 移転として支払う ([00 §0.7](00-glossary.md))。償還は満期 tick に `cause==REDEEM` で元本払出と債券バーン。`BILL` は割引発行 (クーポンなし、満期に額面償還)。
+クーポンは四半期境界 ([03 §3.5](03-time-and-turns.md)) で保有口数 `q` に対し `coupon = floor(q × face × coupon_bps / 10000 / 4)` を P7 で `cause==COUPON` 移転として支払う (年率の四半期按分=単利, [00 §0.7](00-glossary.md)。丸めは [00 §0.20](00-glossary.md) の `floor`、[08 §8.6.2](08-economy-and-ledger.md)・[11 §11.4.3](11-finance-and-instruments.md) と同一)。償還は満期 tick に `cause==REDEEM` で元本払出と債券バーン。`BILL` は割引発行 (クーポンなし、満期に額面償還)。
 
 ### Equity
 
@@ -498,7 +501,7 @@ P3 集約: SCALAR=平均→クランプ→丸め、BINARY=平均 `≥0.5`、CATE
 
 | フィールド | 型 | 制約 | 説明 |
 | --- | --- | --- | --- |
-| `scope` | `enum<Scope>` | `{COUNTRY,WORLD}` | 集計範囲 |
+| `scope` | `enum<ScopeMacro>` | `{COUNTRY,WORLD}` | 集計範囲 (NewsEvent の `ScopeNews` とは別の列挙。15.13) |
 | `country_code` | `id<Country>?` | `WORLD` は `null` | 対象国 |
 | `tick` | `uint` | — | 確定ターン (P9) |
 | `gdp_nominal`,`gdp_real` | `uint` | `≥ 0` | 名目/実質GDP (自国通貨; WORLD は WUI) |
@@ -537,7 +540,7 @@ P9 で生成される世界イベントの監査・観測ログ ([07](07-machine
 | `tick` | `uint` | — | 発生ターン |
 | `phase` | `enum<Phase>` | `P0..P9` | 発生フェーズ |
 | `kind` | `enum<NewsKind>` | `{POLICY,MARKET,BATTLE,FIRM,MACRO,DISASTER,DEMOGRAPHIC}` | 種別 |
-| `scope` | `enum<Scope>` | `{WORLD,COUNTRY,REGION,ENTITY}` | 影響範囲 |
+| `scope` | `enum<ScopeNews>` | `{WORLD,COUNTRY,REGION,ENTITY}` | 影響範囲 (MacroIndicators の `ScopeMacro` とは別の列挙。15.12) |
 | `ref` | `str?` | — | 関連エンティティ/資産/政策ID |
 | `payload` | `map<str,int>` | — | 数値ペイロード (規模・変化量) |
 | `text_key` | `str` | — | 表示テキストの国際化キー |
@@ -556,9 +559,11 @@ P9 で生成される世界イベントの監査・観測ログ ([07](07-machine
 | `assets` | `list<AssetDef>` | — | 追加資産定義 ([00 §0.5](00-glossary.md)) |
 | `recipes` | `list<ProductionRecipe>` | — | 生産レシピ表 |
 | `fee_rate_bps` | `uint` | `≥ 0` | 取引手数料率 ([00 §0.8](00-glossary.md)) |
-| `min_units` | `map<asset_id, uint>` | `CUR:*` | 通貨ごとの価格最小単位 |
+| `min_units` | `map<asset_id, uint>` | `CUR:*` | 通貨ごとの価格最小単位 (`money_minor_unit` の通貨別上書き。未指定通貨は既定 1000) |
 | `population_init` | `map<country_code, uint>` | — | 初期人口 |
 | `wui_init_weights` | `map<asset_id, int>` | 合計=10000 | WUI 初期重み (等加重) |
+| `names` | `NameConfig?` | — | 命名プール (`country_names`/`currency_names`/`firm_names`/`person_given`/`person_family` 等)。表示名のシード由来決定論割当 ([16 §16.14](16-configuration-and-initialization.md)) |
+| `money_minor_unit` | `uint` | 既定 1000 | 全通貨共通の最小単位/表示比 ([16 §16.3](16-configuration-and-initialization.md)。`min_units` で通貨別上書き)。表示は小数3桁＋3桁区切り (表示専用、16 §16.3.1) |
 
 `turns_per_month` の変更は `TURNS_PER_YEAR` と全利率按分に波及するため、シナリオ確定後は不変とする ([00 §0.7](00-glossary.md))。
 

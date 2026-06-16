@@ -24,6 +24,7 @@ flowchart TD
   RC --> ML[ml.*]
   RC --> PL[player.*]
   RC --> RM[room.*]
+  RC --> NM[names.*]
   RC --> SC[scenario.*]
 ```
 
@@ -48,6 +49,7 @@ flowchart TD
 | `world.cells_total` | 9216 | 派生値 `6 × 16 × 96`。全世界のマス総数 |
 
 - `cadence_mode` の意味: `SYNC_REALTIME` は `turn_seconds` 経過で P1 を締め切り P2..P9 を実行する。`SYNC_BARRIER` は全登録クライアントの提出か個別タイムアウトで締め切る。`FAST` は学習・バッチ評価用で実時間待ちなし。いずれもパイプライン ([0.11](00-glossary.md)) は同一。
+- [03 §3.4](03-time-and-turns.md)・[13 §13.5](13-players-and-multiplayer.md) の概念2モードとの対応: **real-time (壁時計デッドライン) = `SYNC_REALTIME`**、**synchronous (壁時計非依存。全提出 `all_submitted` または論理デッドライン `submit_deadline_turns` で締切) = `SYNC_BARRIER` および `FAST`**(`FAST` は論理デッドラインも待たず全提出を即時締切する synchronous の派生で、学習・リプレイ用)。`room.turn_seconds`(16.7.4) は `SYNC_REALTIME` のときのみ `time.turn_seconds` を上書きする。
 - 提出窓口・締切の詳細は [時間とターン](03-time-and-turns.md) に従う。
 
 ## 16.3 通貨・市場・手数料 (`money.*`, `market.*`)
@@ -56,7 +58,10 @@ flowchart TD
 
 | キー | 既定値 | 定義 |
 | --- | --- | --- |
-| `money.minor_unit` | 100 | 1通貨単位の最小単位分割数 (例: 1.00 = 100 minor)。全通貨共通。価格・現金は minor 単位の整数 |
+| `money.minor_unit` | 1000 | 1通貨単位の最小単位分割数 (例: 1.000 = 1000 minor)。全通貨共通。価格・現金・残高は minor 単位の整数。表示小数桁は `log10(minor_unit)=3` |
+| `money.display_decimals` | 3 | 人間表示の小数桁数 (派生値 `log10(minor_unit)`)。**表示専用**で台帳・API・観測・決定論には影響しない (16.3.1) |
+| `money.thousands_separator` | `","` | 整数部の3桁グルーピング文字 (表示専用)。空文字で無効化 |
+| `money.decimal_separator` | `"."` | 小数点文字 (表示専用)。`thousands_separator` と異なる文字であること |
 | `money.numeraire` | `WUI` | 計数単位 ([0.16](00-glossary.md))。純資産順位の基準 |
 | `money.wui_weighting` | `TRADE_GDP` | WUI 再加重方式。`EQUAL`(等加重) / `TRADE_GDP`(GDP×貿易シェア)。genesis は強制的に `EQUAL` 開始 |
 | `money.wui_reweight_period_turns` | 48 | WUI 再加重の周期 (1年) |
@@ -67,7 +72,16 @@ flowchart TD
 | `market.max_open_orders` | 64 | 1エンティティ・1ペアあたりの未約定注文上限 |
 
 - WUI 初期加重: genesis 直後は6通貨等加重 (`1/6` ずつ)。`wui_reweight_period_turns` ごとに各国名目GDP×貿易シェアの正規化で再加重する ([11](11-finance-and-instruments.md))。`money.wui_weighting = EQUAL` の場合は再加重を行わず等加重を維持する。
-- 価格は常に `quote` の minor 単位整数 ([0.8](00-glossary.md))。`minor_unit = 100` により最小通貨単位は 0.01 通貨。
+- 価格・残高は常に `quote` の minor 単位整数 ([0.8](00-glossary.md))。`minor_unit = 1000` により最小通貨単位は `0.001` 通貨。
+
+### 16.3.1 通貨数量の表示整形 (Display Formatting, 表示専用)
+
+人間可読の通貨表示は、整数 minor 単位で保持される内部値を**フロントエンドで整形するだけ**の提示専用処理であり、台帳・API 転送値・観測・報酬・決定論ハッシュには一切影響しない ([00 §0.8/§0.20](00-glossary.md))。API は常に整数 minor 単位 (または `*_str` の十進整数、[14 §14.3](14-api-reference.md)) を送受し、整形はクライアント側で行う。
+
+- **整形規則**: `display = group(internal // minor_unit) + decimal_separator + zero_pad(internal % minor_unit, display_decimals)`。`group(n)` は整数部を3桁ごとに `thousands_separator` で区切る。`minor_unit = 1000` のとき小数3桁。
+- **例** (`minor_unit=1000`, `thousands_separator=","`, `decimal_separator="."`): 内部 `1000` → `1.000`、内部 `1500000` → `1,500.000`、内部 `1500000000` → `1,500,000.000`、内部 `1` → `0.001`。
+- **正準採用フォーマット**は `1,500,000.000`(カンマ3桁区切り＋ピリオド小数3桁)。`thousands_separator`/`decimal_separator` はロケール対応のため構成可能だが、内部表現・約定計算・保存則 ([00 §0.17](00-glossary.md)) はこれに依存しない。
+- WUI 建ての純資産・ランキング ([11 §11.9.3](11-finance-and-instruments.md)) も同じ整形規則で表示する (内部は整数、表示のみ小数3桁＋区切り)。
 
 ## 16.4 初期マクロ政策値 (`fiscal.*`, 金融初期条件)
 
@@ -162,11 +176,12 @@ flowchart TD
 | `LOGISTICS_WORKER` | 6 | `labor.unskilled` |
 | `ENGINEER` | 4 | `labor.engineer` |
 | `HEALTHCARE_WORKER` | 5 | `labor.health` |
-| `TEACHER` | 4 | `labor.unskilled` |
+| `TEACHER` | 4 | `labor.research` |
 | `RESEARCHER` | 3 | `labor.research` |
 | `SOLDIER` | 4 | `labor.soldier` |
 
 - `STUDENT` / `UNEMPLOYED` / `RETIREE` は genesis では割当せず、ライフサイクル ([05](05-agents.md)) の中で `age` と就労状態から動的に派生する。
+- 各労働者系ロールの「主たる `COMM:labor.*`」は [06 §6.3](06-roles.md) のロール→労働種別マッピングと一致する (`LOGISTICS_WORKER`=`labor.unskilled`、`TEACHER`/`RESEARCHER`=`labor.research`)。`labor.research` を供給する `TEACHER`/`RESEARCHER`、および `ENGINEER`/`HEALTHCARE_WORKER` は学歴ゲート `edu_gate` ([05 §5.3](05-agents.md): research=50, engineer=40, health=45) を満たす必要があるため、これらのロールの genesis `education` は対応する `edu_gate` 以上で初期化する (16.7.2 の一般範囲 `30..60` に対する下限保証)。
 - 全ロール集合は [0.14](00-glossary.md) と一致する。本表に現れないロールは初期母集団に存在せず、運用中に創発する。
 
 ### 16.7.2 ロール別 genesis エンドウメント
@@ -223,7 +238,7 @@ flowchart TD
 
 ## 16.8 世界生成 (worldgen)
 
-世界生成は `seed` から決定論的に進む手続きである。各段は前段の出力のみに依存し、独立サブシード `subseed(stage) = hash(seed, stage_id)` を用いる。地形・気候・資源・人口の意味は [04](04-world-and-geography.md) が正準。
+世界生成は `seed` から決定論的に進む手続きである。各段は前段の出力のみに依存し、独立サブシードを用いる。サブシード導出は [03 §3.6.1](03-time-and-turns.md) の正準規則に従い、`master_seed = seed`・`tick = -1`(パイプライン外)・`stream_id` は段別の固定文字列とする: `subseed = H(seed, -1, "worldgen.<stage>", cell_id|region_id|agent_id)`(`H` = SHA-256 → 先頭8バイト LE uint64、PRNG = PCG64)。数値マジック (`0x01` 等) は用いず文字列 `stream_id` に統一する (3.6.1 の worldgen ストリーム列挙と一致)。地形・気候・資源・人口の意味は [04](04-world-and-geography.md) が正準。
 
 ```mermaid
 sequenceDiagram
@@ -238,10 +253,10 @@ sequenceDiagram
   WG->>L: 5. マス/地域/国の確定状態を書込
 ```
 
-1. **地形生成**: 各国 16 地域 (4×4)、各地域 96 マス (12×8) を確定。マスごとに `elevation`(標高)・`is_water`(海陸)・`is_coast`(沿岸)・`fertility`(地力)・`ruggedness`(地形険しさ) をフラクタルノイズ (value noise, subseed `0x01`) で生成。国境は地域グリッド境界に一致。
-2. **気候割当**: 国の南北位置から緯度バンドを定め、標高と併せて `climate.climate_zones`(6帯 `{tropical, arid, temperate, continental, polar, highland}`) のいずれかをマスへ割当。`highland` は高標高マスに割当てる。気候帯ごとに季節 `offset`(農業周期の位相) と基礎降水・気温を設定 (subseed `0x02`)。
-3. **資源スポット配置**: 各地域に `production.resource_spots_per_region`(平均3) のポアソン過程でスポットを置き、各スポットに `raw.*` または `agri.*` 適性と埋蔵量 `endowment = base × resource_scale × Gamma乱数` を割当。`raw.*` は非再生 (`regen=0`)、`agri.*` は地力 `fertility` に比例する再生上限を持つ (subseed `0x03`)。地域の抽出上限は当該地域内スポット埋蔵の合計 ([10](10-industry-and-production.md))。
-4. **人口密度マップ**: マス適性 `habitability = w1·(1-elevation) + w2·is_coast + w3·fertility + w4·(1-disaster_risk)` を正規化し、母集団の居住確率分布とする (subseed `0x04`)。
+1. **地形生成**: 各国 16 地域 (4×4)、各地域 96 マス (12×8) を確定。マスごとに `elevation`(標高)・`is_water`(海陸)・`is_coast`(沿岸)・`fertility`(地力)・`ruggedness`(地形険しさ) をフラクタルノイズ (value noise, stream_id `"worldgen.terrain"`) で生成。国境は地域グリッド境界に一致。
+2. **気候割当**: 国の南北位置から緯度バンドを定め、標高と併せて `climate.climate_zones`(6帯 `{tropical, arid, temperate, continental, polar, highland}`) のいずれかをマスへ割当。`highland` は高標高マスに割当てる。気候帯ごとに季節 `offset`(農業周期の位相) と基礎降水・気温を設定 (stream_id `"worldgen.climate"`)。
+3. **資源スポット配置**: 各地域に `production.resource_spots_per_region`(平均3) のポアソン過程でスポットを置き、各スポットに `raw.*` または `agri.*` 適性と埋蔵量 `endowment = base × resource_scale × Gamma乱数` を割当。`raw.*` は非再生 (`regen=0`)、`agri.*` は地力 `fertility` に比例する再生上限を持つ (stream_id `"worldgen.resource"`)。地域の抽出上限は当該地域内スポット埋蔵の合計 ([10](10-industry-and-production.md))。
+4. **人口密度マップ**: マス適性 `habitability = w1·(1-elevation) + w2·is_coast + w3·fertility + w4·(1-disaster_risk)` を正規化し、母集団の居住確率分布とする (stream_id `"worldgen.popdensity"`。ロール割当は `"worldgen.roles"`)。
 5. **確定状態の書込**: 上記をエンジン状態とし、台帳には未だ残高を置かない (エンドウメントは 16.7 で配賦)。
 
 - 決定論保証: 全段が `(seed, stage_id, cell_id 等)` のみから乱数を引くため、並列生成しても結果は順序非依存で一意 ([0.2](00-glossary.md))。
@@ -338,6 +353,7 @@ flowchart TD
 ```
 
 - 上記シーケンスは決定論的であり、同一入力から同一の初期状態ハッシュを生む。ハッシュは再現性検証 ([0.2](00-glossary.md)) と監査に用いる。
+- 表示名の割当 (16.14): 国名・通貨名は worldgen (B) の確定時、人名はエージェント母集団生成 (D)、企業名は genesis 企業生成 (G) の各段で決定論的に付与する (台帳非変更・状態ハッシュには表示名を含めるが数値ロジックには影響しない)。
 - `warmup_turns` の暖機後にプレイヤー受付を開放し、`tick=0` を「正式開始」と定義する (暖機ターンは負の `tick` または別系列で記録し、報酬・順位に算入しない)。
 - 以降のターン進行は [時間とターン](03-time-and-turns.md) のパイプライン ([0.11](00-glossary.md)) に従う。
 
@@ -350,3 +366,43 @@ flowchart TD
   - `fee_rate_bps`, 各税率, `policy_rate_bps` が `[0, 上限]` レンジ内。
   - `minor_unit ≥ 1` かつ価格・初期残高がすべて整数 ([0.8](00-glossary.md))。
 - 検証通過後の `WorldConfig` は不変 (immutable) とし、シミュレーション中の構成変更はプリセット切替=再初期化でのみ行う。
+
+## 16.14 命名とフレーバー (Naming & Flavor)
+
+国・通貨・企業・エージェントには、curated な名前プールからシード由来で決定論的に割当てる**人間可読の表示名 (display name)** を与える。これは純粋なフレーバー (提示) 層であり、正準IDとは独立である。
+
+- **ID は常に正準**: `country_code`(`ALD` 等, [0.6](00-glossary.md))・通貨 `CUR:<cc>`・`FIRM:<6桁>`・`AGENT:<6桁>`・`PLAYER:<6桁>`([0.4](00-glossary.md)) はロジック・台帳・約定・観測ベクトル ([07](07-machine-learning.md))・決定論ハッシュ ([0.17](00-glossary.md)) の唯一の参照キーである。表示名はこれらに**一切影響しない**。割当の手続きのみがシードから決定論的に定まる (同一 `seed` → 同一割当)。
+- **表示名は観測の数値特徴に入れない**: 名前は API・ニュース・リーダーボード・地図の**ラベル**としてのみ用い、方策の観測テンソル ([07 §7.3](07-machine-learning.md)) には含めない (学習は ID/数値特徴のみに依存し、名前の言語的内容に依存しない)。
+
+### 16.14.1 名前プール (`names.*`)
+
+| キー | 既定 | 定義 |
+| --- | --- | --- |
+| `names.locale_pack` | `DEFAULT` | 名前プールのプリセット束 (言語・テーマ)。プールはこのパックの差分で上書き可 |
+| `names.country_names` | 既定6国名 + 予備 (≥ `num_countries`) | 国の表示名候補。既定は [0.6](00-glossary.md) の `Aldoria/Borealis/Cyrene/Doria/Esmark/Faros` を含む拡張リスト |
+| `names.currency_names` | 国別通貨名候補 (≥6) | 通貨 `CUR:<cc>` の表示名 (例 `Aldor`/`Boreal Krona`)。国名から派生生成も可 |
+| `names.firm_names` | 企業名プール | 企業の表示名候補。`names.firm_name_parts`(接頭辞×接尾辞) からの組合せ生成も可 (プール拡張) |
+| `names.person_given` | 個人名プール | エージェントの given name 候補 |
+| `names.person_family` | 姓プール | エージェントの family name 候補。表示名は `given family` で合成 |
+| `names.assign_person_names` | `true` | エージェントへ人名を割当てるか。`false` なら `entity_id` を表示名にフォールバック |
+
+- プールは `num_countries`(6)・初期企業数・母集団規模 ([16.7](16-configuration-and-initialization.md)) に対し一意割当が可能な大きさを要求する (検証は 16.13)。人名は `|person_given| × |person_family|` の組合せ数が母集団 (既定 600) を十分上回るよう構成する。
+
+### 16.14.2 決定論的割当規則
+
+すべて [03 §3.6.1](03-time-and-turns.md) の subseed (SHA-256→PCG64、`tick=-1` は genesis 外) を用い、走査順は正準 ID 昇順 ([03 §3.7](03-time-and-turns.md))。
+
+- **国名・通貨名**: `rng(seed, -1, "naming.country")` / `rng(seed, -1, "naming.currency")` でプールをシャッフルし、`country_code` 辞書順 (`ALD<BOR<...<FAR`) に重複なく割当てる。占領で `cell.owner` が変わっても国の表示名・通貨名は不変。
+- **企業名**: genesis 企業は `rng(seed, -1, "naming.firm", firm_id)`、運用中の起業企業は `rng(seed, founding_tick, "naming.firm", firm_id)` でプールから割当てる。経営者 (`ENTREPRENEUR`/解禁プレイヤー) が設立時に名前を指定した場合 ([14 §14.5.5](14-api-reference.md) の `name`) はそれを優先し、未指定時のみプール割当。
+- **人名**: エージェントは出生時 (genesis または P6 出生) に `rng(seed, birth_tick, "naming.person", agent_id)` で `given`×`family` を割当てる。プレイヤーは登録時の `display_name`([13](13-players-and-multiplayer.md)) を用いる。
+- **一意性とフォールバック**: 同種内 (同一国群・同一エピソードの企業/人名) で表示名が衝突する場合は、決定論的に連番サフィックスを付して一意化する (例 `Helios Devices` → `Helios Devices (2)`)。プール枯渇時も同様にサフィックスで一意性を保証する。
+
+### 16.14.3 初期化シーケンスへの組込
+
+16.12 のシーケンスにおいて、名前割当は状態確定の一部として次の位置で行う (いずれも決定論・台帳非変更)。
+
+- 国・通貨名: worldgen (16.8) の確定状態書込時に割当 (国・通貨は genesis で確定するため)。
+- 企業名: genesis 企業生成 (16.9) 時に割当。
+- 人名: エージェント母集団生成 (16.7) 時に割当 (`assign_person_names=true` のとき)。
+
+名前は [15](15-data-model.md) の表示名フィールド (`Country.name`・`Asset.display_name`・`Firm.display_name`・`Agent.display_name`) に格納し、API ([14](14-api-reference.md)) の国・エンティティ・企業レスポンスで公開する。同一 `(seed, WorldConfig)` から同一の名前割当が再現される ([0.2](00-glossary.md))。

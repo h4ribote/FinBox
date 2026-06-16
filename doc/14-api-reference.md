@@ -10,7 +10,8 @@
 - **バージョニング**: すべてのパスは `/v1` 接頭辞を持つ。破壊的変更は `/v2` を新設して行い、`/v1` は非破壊的にのみ拡張する。レスポンスヘッダ `X-FinBox-Api: v1` を常に付与する。
 - **基底 URL**: `https://{host}/v1`。WebSocket は `wss://{host}/v1/stream`。
 - **時刻の表現**: すべての時間軸は `tick` (整数、0始まりのターン通し番号) と `clock` 表記 `Y{年}-M{月}-T{ターン}` で返す ([00-glossary.md 0.3, 0.7](00-glossary.md))。壁時計時刻 (`server_time`) は提出窓口の判断にのみ用い、シミュレーション状態には影響しない。
-- **数値**: すべての `quantity`・`price`・`cash`・残高は整数 (最小通貨単位) で送受信する。JSON 上は number で表現するが、`2^53` を超え得る台帳金額は精度欠落を避けるため文字列化した十進整数で返す (`amount_str` フィールド規約、14.10)。
+- **数値**: すべての `quantity`・`price`・`cash`・残高は整数 (最小通貨単位) で送受信する。JSON 上は number で表現するが、`2^53` を超え得る台帳金額は精度欠落を避けるため文字列化した十進整数で返す (`amount_str` フィールド規約、14.10)。人間可読の小数表示 (`minor_unit=1000` による小数3桁＋3桁区切り、例 内部 `1500000000` → `1,500,000.000`) は**クライアント側の整形**であり、API は常に整数 minor 単位を送受する ([16 §16.3.1](16-configuration-and-initialization.md))。
+- **表示名**: 国・通貨・企業・エージェントのレスポンスは人間可読の表示名 (`name`/`display_name`) を含みうる (フレーバー、[16 §16.14](16-configuration-and-initialization.md))。表示名は提示専用であり、約定・順位・role-gating 等のロジックは常に正準ID ([00-glossary.md 0.4/0.5](00-glossary.md)) に基づく。
 
 ```mermaid
 flowchart TD
@@ -75,7 +76,7 @@ flowchart TD
   "country": "ALD",
   "base_currency": "CUR:ALD",
   "endowment_basis": "WUI",
-  "starting_capital_str": "1000000",
+  "starting_capital_str": "1500000",
   "roles": ["INVESTOR"]
 }
 ```
@@ -325,16 +326,17 @@ P6 CONSUME 用の消費計画。保有財・サービスをニーズ回復に充
 ```json
 {
   "votes": [
-    { "lever": "policy_rate_bps", "kind": "SCALAR", "value": 175 },
-    { "lever": "vat_bps", "kind": "SCALAR", "value": 1000 },
-    { "lever": "declare_tariff_on:BOR", "kind": "BINARY", "value": 1 },
-    { "lever": "budget_allocation", "kind": "ALLOCATION", "weights": { "military": 0.2, "welfare": 0.5, "subsidy": 0.3 } },
-    { "lever": "trade_stance", "kind": "CATEGORICAL", "scores": { "open": 0.7, "neutral": 0.2, "closed": 0.1 } }
+    { "lever": "policy_rate", "kind": "SCALAR", "value": 175 },
+    { "lever": "tax_consumption", "kind": "SCALAR", "value": 1000 },
+    { "lever": "tariff[BOR]", "kind": "SCALAR", "value": 800 },
+    { "lever": "subsidy_focus", "kind": "CATEGORICAL", "scores": { "AGRICULTURE": 0.5, "MANUFACTURING": 0.3, "ENERGY": 0.2 } },
+    { "lever": "military_targets", "kind": "ALLOCATION", "weights": { "CELL:BOR.3.4.2": 0.6, "CELL:BOR.3.5.2": 0.4 } }
   ]
 }
 ```
 
-`kind` は `SCALAR`/`BINARY`/`CATEGORICAL`/`ALLOCATION` のいずれかで [00-glossary.md 0.12](00-glossary.md) の集約規則に正確に対応する。レバーの完全な列挙・レンジは [12](12-politics-and-government.md)。
+- `lever` は [12 §12.3](12-politics-and-government.md) の `lever_id` を正準とする (`policy_rate`/`tax_income`/`tax_corporate`/`tax_consumption`/`tariff[partner]`/`gov_spending`/`welfare_level`/`bond_issuance_cap`/`subsidy_focus`/`subsidy_rate`/`military_budget`/`military_targets`/`min_wage`/`immigration_openness`)。本書独自の別名 (`vat_bps`/`budget_allocation`/`trade_stance` 等) は用いない。SCALAR の `value` は当該レバーの単位 (bps または通貨単位、[12 §12.3](12-politics-and-government.md))。`tariff[partner]` は相手国別 (5本) のうち1本を指定する。
+- `kind` は `SCALAR`/`BINARY`/`CATEGORICAL`/`ALLOCATION` のいずれかで [00-glossary.md 0.12](00-glossary.md) の集約規則に正確に対応する。`BINARY` は宣戦・講和・同盟など国家間関係の遷移 ([12 §12.8](12-politics-and-government.md) の関係モデル拡張) に用いる。レバーの完全な列挙・型・レンジは [12 §12.3](12-politics-and-government.md)。
 
 ### 14.5.7 `POST /v1/central-bank/{country}/policy`
 
@@ -349,7 +351,7 @@ P6 CONSUME 用の消費計画。保有財・サービスをニーズ回復に充
 
 ### 14.5.8 `POST /v1/governments/{country}/fiscal-exec`
 
-`BUREAUCRAT` (当該国配属、`govern` scope) のみ。P3 GOVERN で確定した予算配分 (`budget_allocation` の `welfare`/`subsidy` 枠) を、実際の受益者・対象産業へ配分執行する。執行は P7 FISCAL のプロトコル移転 (補助金・社会保障・失業給付の支給、[00-glossary.md 0.10](00-glossary.md)) として反映される。確定枠を超える配分はクランプされる (14.9.1)。
+`BUREAUCRAT` (当該国配属、`govern` scope) のみ。P3 GOVERN で確定した福祉・補助の政策値 (`welfare_level`/`subsidy_rate`/`subsidy_focus`/`gov_spending`、[12 §12.3/§12.4.5/§12.4.6](12-politics-and-government.md)) に基づき、実際の受益者・対象産業へ支給を執行する。執行は P7 FISCAL のプロトコル移転 (補助金・社会保障・失業給付の支給、[00-glossary.md 0.10](00-glossary.md)) として反映される。確定政策値から算定される枠を超える配分はクランプされる (14.9.1)。
 
 ```json
 {
@@ -361,7 +363,7 @@ P6 CONSUME 用の消費計画。保有財・サービスをニーズ回復に充
 ```
 
 - `program`: `welfare`(福祉・社会保障・失業給付) / `subsidy`(産業補助金)。`target` は受益者ロール (`UNEMPLOYED` 等) または対象産業 (`INDUSTRY:<産業>`、[00-glossary.md 0.15](00-glossary.md))。`amount_str` は自国通貨量。
-- 各 `program` の総額は P3 で確定した `budget_allocation` 枠 ([12](12-politics-and-government.md)) を上限とし、超過分は P2 VALIDATE でクランプされる。
+- 各 `program` の総額は P3 で確定した政策値から算定される枠 (`welfare`: `welfare_level × welfare_base`、`subsidy`: `subsidy_rate × 対象産業出荷額`、いずれも `gov_spending` の歳出枠内、[12 §12.4.5/§12.4.6](12-politics-and-government.md)) を上限とし、超過分は P2 VALIDATE でクランプされる。`subsidy` の対象産業は `subsidy_focus` で選ばれた産業に限る。
 
 ## 14.6 主要スキーマ (Core Schemas)
 

@@ -50,7 +50,7 @@ flowchart TD
 | `FACTORY_WORKER` | `COMM:labor.factory` | `MANUFACTURING`, `ENERGY` | `factory` | 賃金収入とニーズ充足 |
 | `SERVICE_WORKER` | `COMM:labor.service` | `SERVICES`(小売・娯楽・接客) | `service` | 賃金収入とニーズ充足 |
 | `OFFICE_WORKER` | `COMM:labor.office` | `FINANCE`, `SERVICES`, 全産業の管理部門 | `office` | 賃金収入とニーズ充足 |
-| `LOGISTICS_WORKER` | `COMM:labor.factory` | `LOGISTICS` | `factory` | 賃金収入とニーズ充足 |
+| `LOGISTICS_WORKER` | `COMM:labor.unskilled` | `LOGISTICS` | `unskilled` | 賃金収入とニーズ充足 |
 | `ENGINEER` | `COMM:labor.engineer` | `MANUFACTURING`, `ENERGY`, `CONSTRUCTION` | `engineer` | 高スキル賃金とニーズ充足 |
 | `HEALTHCARE_WORKER` | `COMM:labor.health` | `SERVICES`(医療) | `health` | 賃金収入とニーズ充足 |
 | `TEACHER` | `COMM:labor.research` | `SERVICES`(教育) | `research` | 賃金収入とニーズ充足 |
@@ -62,7 +62,7 @@ flowchart TD
 
 注記:
 
-- `LOGISTICS_WORKER` と `FACTORY_WORKER` はともに `COMM:labor.factory` を供給する (物流は製造系の労働力プールを共有する)。両者は就労先産業のラベルが異なるのみで、労働市場では同一資産として板寄せされる。
+- `LOGISTICS_WORKER` は `COMM:labor.unskilled` を供給する。物流 (`LOGISTICS`) の生産レシピ `svc.transport` が `labor.unskilled` を投入とするため ([10 §10.1, §10.4.3](10-industry-and-production.md))、物流労働は汎用 (unskilled) 労働力プールを `UNEMPLOYED` 等と共有し、`labor.office`(管理部門) と組み合わせて雇用される。`FACTORY_WORKER` の供給する `COMM:labor.factory`(製造・エネルギー向け) とは別資産である。`labor.*` の種別集合は [00 §0.5.2](00-glossary.md) の11種に固定され、物流専用の労働種別は設けない。
 - `TEACHER` は教育サービス (`COMM:svc.education`) の生産に必要な `COMM:labor.research` を供給する。`RESEARCHER` と同じ労働種別を供給するが、就労先が `SERVICES`(教育) と `RESEARCH` で分かれる。`COMM:labor.research` を供給する以上、`TEACHER` も `RESEARCHER` と同じく [05 §5.3](05-agents.md) の学歴ゲート `edu_gate(research) = 50`(`education ≥ 50` で初めて `research` skill が `cap_low` 以上に上がる) を満たす必要がある。教育サービス供給ロールにも研究と同一の学歴要件が課される。
 - `STUDENT` と `RETIREE` は労働力を生産しない非生産状態であり、消費とニーズ管理のみを行う ([エージェント 05](05-agents.md))。`STUDENT` は `COMM:svc.education` を消費して `education` と `skill[*]` を蓄積し、就労可能年齢・スキル要件を満たすと労働者系ロールへ遷移する (6.10)。
 - `UNEMPLOYED` は `COMM:labor.unskilled` を供給できる過渡状態であり、いずれかの産業に約定すると対応する労働者系ロールへ遷移する (就労、6.10)。

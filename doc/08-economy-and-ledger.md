@@ -189,7 +189,7 @@ P4 で各取引ペアの板寄せが約定すると、約定ごとに `trade_id`
 
 #### 国債/社債クーポン支払 — `transfer_id` / P7
 
-発行体 (`GOV:xx` または `FIRM:nnnnnn`) から保有者 `H` への現金移転 (総量保存)。クーポン額は `coupon = ceil(face × r_turn)`、`r_turn = r_annual / TURNS_PER_YEAR` ([00 §0.7](00-glossary.md))。計算詳細は [11](11-finance-and-instruments.md)。
+発行体 (`GOV:xx` または `FIRM:nnnnnn`) から保有者 `H` への現金移転 (総量保存)。クーポンは四半期境界 (P7, [03 §3.5](03-time-and-turns.md)) で保有口数 `q` に対し `coupon = floor(q × face × coupon_bps / 10000 / 4)` を支払う (年率の四半期按分=単利, [00 §0.7](00-glossary.md)。丸めは [00 §0.20](00-glossary.md) の `floor`、按分残差は発行体側で吸収)。計算詳細は [11 §11.4.3](11-finance-and-instruments.md)、データ表現は [15 §15.8](15-data-model.md)。
 
 | asset_id | from | to | quantity |
 | --- | --- | --- | --- |

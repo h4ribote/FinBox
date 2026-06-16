@@ -137,7 +137,7 @@ flowchart LR
 
 ## 0.6 国と通貨 (Countries & Currencies)
 
-シミュレーションは6か国で構成される。各国は1つの法定通貨・1つの政府・1つの中央銀行を持つ。国名は既定シナリオの呼称であり、地理パラメーターはシードによりランダム生成される (`04-world-and-geography.md`)。
+シミュレーションは6か国で構成される。各国は1つの法定通貨・1つの政府・1つの中央銀行を持つ。`country_code`(3文字大文字) と通貨 `asset_id` (`CUR:<country_code>`) は正準IDであり固定・不変である。下表の**国名・通貨名は人間可読の表示名 (フレーバー)** であり、正準IDではない。表示名は既定シナリオの呼称を既定値としつつ、シード由来で curated プールから決定論的にランダム割当できる (`16-configuration-and-initialization.md` §16.14)。地理パラメーターも同様にシードでランダム生成される (`04-world-and-geography.md`)。表示名はロジック・台帳・観測の数値特徴に影響しない。
 
 | 国名 | country_code | 通貨 asset_id | 政府 | 中央銀行 |
 | --- | --- | --- | --- | --- |
@@ -167,6 +167,7 @@ flowchart LR
 - 価格 `price` は「`quote` 通貨の最小単位 / `base` 1単位」を表す整数 (price tick)。最小単位は通貨ごとに構成で定義する (`16`)。
 - 約定1件の現金移動額は `cash = price × quantity`(厳密な整数)。端数は発生しない。
 - 取引手数料 (任意) は `EXCH` が収受し、`fee = ceil(cash × fee_rate)` の整数で控除する。
+- **表示整形**: 人間可読の通貨表示は内部整数 (minor 単位) を `minor_unit`(既定 1000) で除し、小数 `log10(minor_unit)=3` 桁＋3桁区切りで描画する提示専用処理である (例 内部 `1500000000` → `1,500,000.000`)。台帳・価格・決済・観測・決定論はすべて整数 minor 単位のままで、表示整形には一切依存しない (詳細は `16-configuration-and-initialization.md` §16.3.1、丸めの正準は 0.20)。
 
 ## 0.9 共通台帳 (Common Ledger)
 
@@ -295,3 +296,21 @@ flowchart LR
 - **注文種別 (`order_type`)**: `LIMIT`(指値)、`MARKET`(成行)、`IOC`(即時約定・残数キャンセル / immediate-or-cancel)、`FOK`(全数即時約定・不成立なら全数キャンセル / fill-or-kill)。
 - **TIF (`tif`)**: `GFT`(当ターン限り / good-for-turn、既定)、`GTC`(取消まで有効 / good-till-cancel)、`GTT`(指定ターンまで有効 / good-till-tick、`expires_tick` で失効)。
 - `IOC`/`FOK` は即時系の注文種別であり TIF とは独立の軸である。`LIMIT`/`MARKET` の既定 TIF は `GFT`。`DAY` という別名は用いず `GFT` に統一する。
+
+## 0.20 丸めの正準規則 (Canonical Rounding)
+
+整数台帳 (0.8, 0.9) へ反映する値の丸め方向を用途別に固定する。すべてのドキュメントと実装は本表を唯一の正準とし、独自の丸め方向を定義しない (差異があれば本表に統一する)。中間計算で実数を用いてよいが、台帳・状態へ書き込む前に必ず本規則で整数化する (0.17 整数規律)。bps レートは整数のまま `amount × rate_bps // 10000` の形で適用し、浮動小数レートを経由しない。
+
+| 用途 | 丸め | 補足 |
+| --- | --- | --- |
+| 取引手数料 `fee` | `ceil` | `fee = ceil(cash × fee_rate_bps / 10000)` (0.8, `09-markets-and-trading.md`) |
+| 税・関税・補助金・福祉給付 | `floor` | 納税者有利。`floor(base × rate_bps / 10000)` (`12-politics-and-government.md`) |
+| 利息・クーポン・単利按分 | `floor` | 端数は発行体が吸収し資産ごとの借方=貸方を厳守 (`03-time-and-turns.md`, `08-economy-and-ledger.md`, `11-finance-and-instruments.md`) |
+| 1株あたり配当 | `floor` | 端数は発行体 (企業) に留保 (`11-finance-and-instruments.md`) |
+| SCALAR 政策集約の tick 丸め | `round` (round-half-up, `.5` 切り上げ) | クランプを先に行い、その後 tick へ丸める (`clamp` → `round_to_tick`、0.12, `12-politics-and-government.md`) |
+| ALLOCATION・比例配分の整数化 | `largest-remainder` (Hamilton) | 端数同点は配分先キーの昇順 (`entity_id` / `cell_id` / 次元 index)。合計を厳密に保存 (`10-industry-and-production.md`, `12-politics-and-government.md`) |
+| ニーズ等の固定小数 (×1000) 変換 | `floor` | 状態は整数で保持 (`05-agents.md`) |
+
+- **クーポンの按分と頻度**: 利付債のクーポンは四半期境界 (P7, 3.5) で `coupon = floor(q × face × coupon_bps / 10000 / 4)` を一括支払する (年率の四半期按分=単利、0.7。`/4` は1年=4四半期)。ファシリティ・借入利息は毎ターン `floor(Pr × r_annual_bps / 10000 / TURNS_PER_YEAR)` で発生する (`11-finance-and-instruments.md`)。いずれも `floor` で整数化し、按分残差は発行体側に集約して借方=貸方を保つ。
+- **表示・評価専用の派生値** (YTM・現在価値・mark price・mid 気配・各種指数) は台帳移転ではないため本表の対象外であり、各ドキュメントが表示丸めを定める。ただし台帳へ移転される金額 (利払・配当・税・手数料) は必ず本表に従う。
+- **人間可読の通貨表示** (フロントエンド) は本表の整数丸めとは独立した提示専用の整形であり、台帳・観測・決定論には一切影響しない (0.8 の `unit_scale`、表示整形の詳細は `16-configuration-and-initialization.md`)。
