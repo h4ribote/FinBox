@@ -21,8 +21,10 @@ class SkeletonConfig:
     # production
     firm_capacity_food: int = 6      # target food inventory the firm refills to each turn
 
-    # P7 cash recycling: firm pays a wage to each agent (closes the agent<->firm loop)
-    wage_per_turn: int = 2000
+    # P7 cash recycling: firm pays a wage to each agent (closes the agent<->firm loop).
+    # Sized to steady-state food revenue: ~0.33 food/agent/turn x food_ref ~ 800/agent
+    # so the firm neither hoards nor drains (sustainable long-run loop).
+    wage_per_turn: int = 800
 
     # genesis endowments (minor units)
     agent_start_cash: int = 50000    # doc 16 16.7.2 labor genesis cash
