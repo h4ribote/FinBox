@@ -118,7 +118,7 @@ flowchart LR
 
 ## 7.5 報酬関数 (Reward Functions)
 
-報酬は P9 ADVANCE で計算 ([00 0.11](00-glossary.md#011-ターンパイプライン-canonical-turn-pipeline))。各式は正規化前の生報酬を定義し、正規化は 7.5.9 に従う。記号: `Δx = x_t − x_{t-1}`。重み `w_*`、係数は構成 ([16](16-configuration-and-initialization.md)) で与える既定値。WUI 換算純資産を `W_i`(エンティティ `i` の全資産を最新清算価格でマークし WUI へ換算、[00 0.16](00-glossary.md#016-計数単位とマクロ指標-numéraire--macro-indicators))。
+報酬は P9 ADVANCE で計算 ([00 0.11](00-glossary.md#011-ターンパイプライン-canonical-turn-pipeline))。各式は正規化前の生報酬を定義し、正規化は 7.5.9 に従う。記号: `Δx = x_t − x_{t-1}`。重み `w_*`・係数 (`b_alive`/`D_death`/`D_bankrupt`/`w_wealth`/`w_ret`/`w_rank`/`π_target`/`u_natural`/`γ` 等) の既定値は [16 §16.15.5](16-configuration-and-initialization.md) で確定する (構成で上書き可、学習段階で調整)。WUI 換算純資産を `W_i`(エンティティ `i` の全資産を最新清算価格でマークし WUI へ換算、[00 0.16](00-glossary.md#016-計数単位とマクロ指標-numéraire--macro-indicators))。
 
 ### 7.5.1 WORKER (労働者系)
 

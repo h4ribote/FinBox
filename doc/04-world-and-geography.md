@@ -182,7 +182,7 @@ mineral_deposits[mineral].stock ← max(0, stock - mined(cell, mineral, t))
 | `fish` | 0.9 | 0.9 | 1.0 | 1.1 | 1.2 | 1.2 | 1.1 | 1.0 | 1.1 | 1.1 | 1.0 | 0.9 |
 | `timber` | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 |
 
-- 他気候帯は位相をずらす: `tropical` は年中 `≈1.1`(変動小)、`arid` は全作物に `×0.4` の乾燥ペナルティ、`continental`/`polar` は生育期 (5..9月) に集中し冬は 0、`highland` は標高に応じ温帯から低下。
+- 他気候帯は位相をずらす: `tropical` は年中 `≈1.1`(変動小)、`arid` は全作物に `×0.4` の乾燥ペナルティ、`continental`/`polar` は生育期 (5..9月) に集中し冬は 0、`highland` は標高に応じ温帯から低下 (`×(1 - elevation/16000)`)。正準係数は [16 §16.15.6](16-configuration-and-initialization.md)。
 - `timber` は季節非依存 (年中伐採可、再生は 4.3.3 のロジスティック)。
 
 ### 4.4.3 per-turn 確率天候と災害

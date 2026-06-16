@@ -197,7 +197,7 @@ P6 CONSUME でエージェントが購入・消費した財・サービスの当
 
 ### 12.5.1 軍需品の生産・調達
 
-`military_budget` の予算枠で、政府は P4 CLEAR の財市場から `COMM:mil.munitions` を購入し国 (`GOV`) の軍需在庫に積む。需要を喚起しても供給が不足すれば在庫は積み上がらない (空白を作らない経済原則、[00-glossary.md 0.2](00-glossary.md))。`armaments` 産業の生産・地域上限・投入レシピは [10](10-industry-and-production.md) に従う。軍需品在庫は国別マクロ指標 ([00-glossary.md 0.16](00-glossary.md)) として公開される。
+`military_budget` の予算枠で、政府は P4 CLEAR の財市場から `COMM:mil.munitions` を購入し国 (`GOV`) の軍需在庫に積む。`military_budget` は攻撃調達/防御リザーブ/要塞建設へ `combat.budget_split`(既定 `[5000, 3000, 2000]` bps = 50/30/20%、[16 §16.15.2](16-configuration-and-initialization.md)) で按分する。需要を喚起しても供給が不足すれば在庫は積み上がらない (空白を作らない経済原則、[00-glossary.md 0.2](00-glossary.md))。`armaments` 産業の生産・地域上限・投入レシピは [10](10-industry-and-production.md) に従う。軍需品在庫は国別マクロ指標 ([00-glossary.md 0.16](00-glossary.md)) として公開される。
 
 兵員は労働力 `COMM:labor.soldier` (`SOLDIER` ロールが供給) で表し、軍は munitions (火力) と soldier (人員) の両方を消費する。守備力にも soldier が寄与する (12.5.4)。
 
@@ -233,19 +233,19 @@ flowchart LR
 戦力定義:
 - 攻撃戦力 `ATK = munitions_committed × mun_power + soldier_committed × sol_power_atk`。
 - 守備戦力 `DEF = fortification(cell) × fort_power + garrison_soldier × sol_power_def + munitions_defense × mun_power`。
-- `fortification(cell)` はセルの防御度 (12.6 / [04](04-world-and-geography.md))、`garrison_soldier` は当該セルに配置された守備兵、`munitions_defense` は防御側が割り当てた軍需。係数 `mun_power, sol_power_atk, sol_power_def, fort_power` は構成 ([16](16-configuration-and-initialization.md))。
+- `fortification(cell)` はセルの防御度 (12.6 / [04](04-world-and-geography.md))、`garrison_soldier` は当該セルに配置された守備兵、`munitions_defense` は防御側が割り当てた軍需。係数 `mun_power, sol_power_atk, sol_power_def, fort_power` は構成 ([16 §16.15.2](16-configuration-and-initialization.md): 既定 `mun_power=10, sol_power_atk=3, sol_power_def=4, fort_power=2`)。
 
 占領確率 (戦力比のロジスティック):
 ```
 ratio = ATK / max(DEF, 1)
 P_capture = clamp( ratio^k / (ratio^k + 1) , 0, P_max )      (既定 k=2, P_max=0.95)
 ```
-ターン乱数 `u ∈ [0,1)` を引き、`u < P_capture` なら占領成功。
+決定論のため**整数固定小数** (スケール `combat.ratio_scale = 1000`、係数は [16 §16.15.2](16-configuration-and-initialization.md)) で計算し、浮動小数を状態経路に置かない (用語集 0.17): `ratio = ATK × 1000 // max(DEF, 1)`、`r2 = ratio × ratio // 1000`、`P_capture_bps = min(combat.p_max_bps, r2 × 10000 // (r2 + 1000))`。ターン乱数 `u = rng(tick, "combat", cell_id).integers(0, 10000)` を引き、`u < P_capture_bps` なら占領成功。検証で浮動小数版との `P_capture` 差は < 0.001 (`ATK=DEF→0.50`, `2×→0.80`, `5×→0.95` 上限)。
 
-解決の結果 (成功/失敗いずれでも) 消耗が発生する:
-- 攻撃側: 投入 munitions の `attrition_atk` 割 (既定 60%) を消費 (消滅、プロトコル移転)。占領成功時は追加で soldier 消耗 `cas_atk`。
-- 防御側: `min(DEF, ATK)` に比例した fortification 低下と garrison/munitions 消耗。
-- すべての消滅は `COMM:mil.munitions` / `COMM:labor.soldier` のバーンとして二重仕訳記録 ([00-glossary.md 0.10](00-glossary.md))。
+解決の結果 (成功/失敗いずれでも) 消耗が発生する。係数はすべて [16 §16.15.2](16-configuration-and-initialization.md) で確定 (`attrition_atk_bps=6000`, `attrition_def_bps=4000`, `cas_atk_bps=2000`, `post_capture_fort=50`)。
+- 攻撃側: 投入 munitions の `attrition_atk_bps` 割 (既定 60%) を消費 (消滅、プロトコル移転)。占領成功時は追加で soldier を `cas_atk_bps`(20%) 消耗。
+- 防御側: `min(DEF, ATK)` に比例した fortification 低下 (係数 `attrition_def_bps`) と garrison/munitions 消耗。
+- すべての消滅は `COMM:mil.munitions` / `COMM:labor.soldier` のバーンとして二重仕訳記録 ([00-glossary.md 0.10](00-glossary.md))。丸めは floor (用語集 0.20)。
 
 占領成功時の領土更新:
 - `cell.owner` を攻撃国へ変更する。
@@ -289,7 +289,7 @@ sequenceDiagram
 
 - **支配と混在**: 1つの地域 (region) 内に複数国が支配するセルが混在しうる。国の領土は所有セルの集合であり、地域は行政区画にすぎない。地域内のセル所有比率が支配の度合いを表す。
 - **占領による獲得**: セル占領で当該セルの資源産出枠・人口・課税基盤が新所有国へ移る (12.7)。無主セル (`owner==NONE`) は隣接条件下で無抵抗 (DEF は fortification のみ) で確保しうる。
-- **防御度 fortification**: 政府は `military_budget` または `gov_spending` の一部で `COMM:build.construction_labor` および munitions を投入してセルの fortification を強化できる (要塞建設)。`fortification += floor(invested_construction × fort_build_coeff)`、上限 `fort_max`。fortification は時間経過で `fort_decay` 逓減し、維持には継続投資が要る。fortification は攻撃解決 (12.5.4) の DEF に直結する。
+- **防御度 fortification**: 政府は `military_budget` または `gov_spending` の一部で `COMM:build.construction_labor` および munitions を投入してセルの fortification を強化できる (要塞建設)。`fortification += floor(invested_construction × fort_build_coeff)`、上限 `fort_max`。fortification は毎ターン `fort_decay_bps_per_turn` で逓減し、維持には継続投資が要る (係数 `fort_build_coeff=5`/`fort_max=1000`/`fort_decay_bps_per_turn=100`、[16 §16.15.2](16-configuration-and-initialization.md))。fortification は攻撃解決 (12.5.4) の DEF に直結する。
 
 ## 12.7 占領による資源・人口・課税基盤の移転
 
@@ -329,7 +329,9 @@ Welfare(c) = β_gdp·gdp~ + β_emp·employment~ + β_hap·happiness~ + β_cpi·p
 | 領土 | `territory~` | 0.05 | 支配セル数 / 全セル数 |
 | 安全保障 | `security~` | 0.10 | 国民平均 `security` ニーズと軍需在庫・フロント安定度の合成 |
 
-政治家報酬 `r_politician = Welfare(c)_T − Welfare(c)_{T-1} + ε_term`(任期末の選挙再選ボーナス `ε_term`、12.10)。報酬整形・割引・学習方式の詳細は [07](07-machine-learning.md) を正とする。
+各正規化項 `~` の具体式と係数は [16 §16.15.3](16-configuration-and-initialization.md) で確定する: `gdp~ = sigmoid(real_growth_bps / gdp_growth_scale)`(`gdp_growth_scale=300`)、`price_stability~ = exp(-((inflation_bps - cpi_target_bps)/price_band_bps)^2)`(`cpi_target_bps=200`, `price_band_bps=300`)、`fiscal_sustainability~ = 1 - clamp(debt_to_gdp_bps / gov_debt_ceiling_ratio_bps)`、`security~ = 0.5·avg_security/100 + 0.3·min(1, munitions/mun_ref) + 0.2·front_stability`。
+
+政治家報酬 `r_politician = Welfare(c)_T − Welfare(c)_{T-1} + ε_term`(任期末の選挙再選ボーナス `ε_term = 0.1`、12.10)。報酬整形・割引・学習方式の詳細は [07](07-machine-learning.md) を正とする。
 
 ```mermaid
 flowchart TD
@@ -347,7 +349,7 @@ flowchart TD
 
 年境界イベント ([03](03-time-and-turns.md) の年次イベント、`tick % TURNS_PER_YEAR == 0`) で各国は選挙評価を行う。選挙は P9 ADVANCE の年次フックで決定論的に実行する。
 
-- 各 `POLITICIAN` の評価スコア `eval_i` を、在任中の `Welfare(c)` 寄与・公約整合・国民 loyalty 等で算定する。
+- 各 `POLITICIAN` の評価スコア `eval_i = 0.6·welfare_contrib_i + 0.2·promise_align_i + 0.2·avg_loyalty_c/100` で算定する ([16 §16.15.3](16-configuration-and-initialization.md))。`welfare_contrib_i` は在任中の `ΔWelfare(c)` への寄与、`promise_align_i ∈ [0,1]` は提案と確定政策の整合度、`avg_loyalty_c` は国民平均忠誠。
 - スコア下位の政治家を交代させ、候補プール (高 loyalty・高 education のエージェント、または新規生成) から補充する。交代人数は比率 `replace_fraction` (既定 2/7 ≈ 0.2857) から `n_replace = floor(replace_fraction × n_politicians)` で一意に定める (n_politicians=7・replace_fraction=2/7 なら `floor(2) = 2` 人)。`replace_fraction` は比率であり、`n_politicians` を構成 (12.1.1/[16](16-configuration-and-initialization.md)) で変更しても交代人数は floor 整数化で一意に決まる。スコア同点による下位 `n_replace` 人の選定は最小 `entity_id` を優先する (決定論)。`term_length_turns` を満了した政治家は再評価対象となる。
 - 交代はロール再配属イベントであり、退任者は労働者系ロール ([00-glossary.md 0.14](00-glossary.md)) へ戻る (またはプール待機)。新任者は `POLITICIAN` を獲得し、学習済み政策方策を継承する (世代間の方策継承は [07](07-machine-learning.md))。
 - 再選された政治家には報酬ボーナス `ε_term` が与えられ、厚生改善と再選が学習目標として整合する。

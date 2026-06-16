@@ -305,7 +305,7 @@ submit LIMIT SELL ask qty (tif=GTC)
 
 ### 9.7.4 MM の報酬 (07 と整合)
 
-MM の報酬関数は [07 機械学習](07-machine-learning.md) と [00 用語集 0.14](00-glossary.md) のロール定義に整合し、次の3要素を主成分とする (係数は [07](07-machine-learning.md)/[16](16-configuration-and-initialization.md) で確定)。
+MM の報酬関数は [07 機械学習](07-machine-learning.md) と [00 用語集 0.14](00-glossary.md) のロール定義に整合し、次の3要素を主成分とする (報酬係数は [07 §7.5.3](07-machine-learning.md)/[16 §16.15.5](16-configuration-and-initialization.md)、気配係数 `base_spread`/`inventory_skew`/`quote_size`/`target_inv` は [16 §16.15.4](16-configuration-and-initialization.md) で確定)。
 
 - **資産を減らさない (PnL 保全)**: WUI 換算純資産 ([00 用語集 0.16](00-glossary.md)) の非減少。マーク・トゥ・マーケットの含み損益と確定損益を合算。在庫を清算価格でマークするため、買い溜めた在庫の値下がりは罰せられる。
 - **他注文と乖離しない (価格整合)**: MM の提示気配 mid が市場の `p*` および他 MM のクロスレート整合 (9.7.6) から乖離すると負の報酬。これにより MM は公正価格周辺に気配を集める。

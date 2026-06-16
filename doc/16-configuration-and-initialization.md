@@ -104,25 +104,27 @@ flowchart TD
 
 ## 16.5 ニーズ減衰・割引 (`need.*`)
 
-ニーズ状態は [用語集 0.13](00-glossary.md) で列挙される `0..100` の連続値。本表は1ターンあたりの線形減衰量 `decay_per_turn`(P6 CONSUME 後に適用) の既定を定める。詳細な回復関数・死亡条件は [05](05-agents.md)。
+ニーズ状態は [用語集 0.13](00-glossary.md) で列挙される `0..100` の連続値。**ニーズの減衰・回復・閾値・死亡条件の正準モデルは [05 §5.2/§5.3/§5.4](05-agents.md) を唯一の真実とする**。本表はその既定の `decay_per_turn`(基礎減衰、非労働時の baseline) を構成キーとして再掲したもので、[05](05-agents.md) と数値を一致させる (差異があれば 05 を正とし本表を修正)。
 
-| ニーズ | `decay_per_turn` 既定 | 致死/警告 |
+| ニーズ | `decay_per_turn` 既定 (= [05 §5.2](05-agents.md)) | 致死/警告 ([05 §5.4](05-agents.md)) |
 | --- | --- | --- |
-| `satiety` | 8 | `≤ 0` が連続8ターンで餓死リスク |
-| `hydration` | 12 | `≤ 0` が連続4ターンで脱水死リスク |
-| `stamina` | 6 | 低下で労働供給能力低下 |
-| `health` | 3 | `≤ 0` で死亡判定 ([05](05-agents.md)) |
-| `rest` | 5 | 低下で生産性ペナルティ |
-| `happiness` | 2 | 派生 (他ニーズの加重) |
-| `stress`(逆値) | 4(上昇) | 高ストレスで health 追加減衰 |
-| `comfort` | 3 | 住居なしで加速 |
-| `social` | 4 | — |
-| `security` | 0(国家状態で決定) | 戦時に低下 |
-| `leisure` | 6 | — |
-| `loyalty` | 1 | 福祉・治安・課税で増減 |
+| `satiety` | 6 | `= 0` が連続 `STARVE_TURNS = 6` ターンで餓死 |
+| `hydration` | 10 | `= 0` が連続 `STARVE_TURNS = 6` ターンで脱水死 |
+| `stamina` | 2 (非労働時。労働時は `stamina_cost(k)`×供給量を追加消費、[05 §5.3](05-agents.md)) | `< 10` で労働供給不可 |
+| `health` | 1 (基礎。`age` 高で追加減衰、`satiety<20`/`hydration<15` で追加) | `< HEALTH_CRIT = 10` で確率死、`= 0` で確定死 |
+| `rest` | 3 (非労働時。労働時は `rest_cost(k)`×供給量を追加消費) | `< 20` で生産性ペナルティ |
+| `happiness` | — (直接減衰なし。マズロー合成で毎ターン再計算、[05 §5.2.5](05-agents.md)) | `< 30` で生産性 `0.85×` |
+| `stress`(逆値) | `+3`(蓄積) | `> 70` で `health -3`・生産性 `0.8×` |
+| `comfort` | 2 | 住居 (`housing_tier`) で目標漸近 |
+| `social` | 4 | `< 20` で `happiness -3` |
+| `security` | 1 (国家状態の `security_target` へ漸近) | `< 30` で移住志向上昇 |
+| `leisure` | 7 | `< 15` で `happiness -2`・`stress +2` |
+| `loyalty` | — (`loyalty_target` へ `0.2×gap` 漸近、[05 §5.2.3](05-agents.md)) | 低位で移住・徴兵忌避 |
+| `education` | `0.2` | `svc.education` 消費・就学で回復 |
 
 - `need.global_decay_scale`(既定 `1.0`): 全減衰量への一括スケール。シナリオ難易度調整に用いる。
-- `need.death_check_enabled`(既定 `true`): 致死判定の有効化。学習初期の安定化のため `false` 化可能。
+- `need.death_check_enabled`(既定 `true`): 致死判定 (餓死・病死・加齢死、[05 §5.4](05-agents.md)) の有効化。学習初期の安定化のため `false` 化可能 (`STABLE_LEARN` プリセットで使用)。
+- 妥当性: 上記既定の減衰・回復 ([05 §5.2](05-agents.md)) と参照価格 (16.15) の下で、労働者エージェントは労働/休息を切替えつつ長期 (10年=480ターン) 生存可能で餓死しないこと、賃金が中核消費 (食料・水) を上回ることを数値検証で確認している。
 
 ## 16.6 生産・資源・気候 (`production.*`, `climate.*`)
 
@@ -130,7 +132,7 @@ flowchart TD
 
 | キー | 既定値 | 定義 |
 | --- | --- | --- |
-| `production.recipe_yield_scale` | 1.0 | 全レシピ産出係数への一括スケール。経済規模の基礎調整 |
+| `production.recipe_yield_scale` | 10 | 全レシピの1ラン産出量への一括スケール (1 労働ラン → `recipe_yield_scale` 単位産出)。経済規模・労働生産性の基礎調整 |
 | `production.labor_intensity_scale` | 1.0 | 投入労働量への一括スケール |
 | `production.capacity_expand_per_build` | 1 | `COMM:build.construction_labor` 1単位消費あたりの設備能力増分 ([10](10-industry-and-production.md)) |
 | `production.depreciation_bps_per_turn` | 50 | 設備の減耗率 (0.50%/ターン)。年率換算 `≈ 21.4%` |
@@ -144,6 +146,7 @@ flowchart TD
 
 - 季節は `month` から導出する周期関数。農業 (`AGRICULTURE`) レシピ産出に `1 + season_amplitude × sin(2π × (month-offset)/12)` を乗じる。`offset` は気候帯ごとに異なる ([04](04-world-and-geography.md))。
 - 災害はシード派生のサブ乱数 ([03](03-time-and-turns.md)) で判定し、被災地域の P5 産出を `1 - severity` 倍する。決定論を保つため災害乱数は `(tick, region_id)` から導出する。
+- `recipe_yield_scale` の既定が `10` である根拠 (供給連鎖の採算性): [10 §10.4](10-industry-and-production.md) のレシピは産出1単位あたり概ね労働1単位を投入係数に持つ。`recipe_yield_scale = 1` だと最終財1単位の生産コストが埋め込み労働により賃金水準 (例 `labor.unskilled ≈ 12000` minor) を大きく超え、多段連鎖の compounding で `good.food` 原価が `roughly 586,000` minor に達し、参照価格 (16.15.1) を大幅に上回って**全最終財が赤字=生産不成立**となる。1 労働ランが複数単位を産出する (`recipe_yield_scale ≈ 10`) と `good.food` 原価は `roughly 1,700` minor まで下がり、参照価格 `2400`(16.15.1) に対し正マージン (マークアップ約1.4) を生む。全生産段の単段マージンが正になることを較正で確認している (16.15.1)。これは 16.11 の「賃金1単位で最終財を数単位買える」(賃金12000で food 約5単位) という設計意図と整合する。`recipe_yield_scale` と `genesis_initial_capacity`(16.9) の積が母集団需要 (各国 約100人の消費) を満たす量比になるよう釣り合わせる。
 
 ## 16.7 母集団とエンドウメント (`population.*`, `economy.*`)
 
@@ -216,7 +219,8 @@ flowchart TD
 | `EXCH` | 全通貨残高 0。手数料収受で累積 |
 | `PLAYER:*` | 16.7.4 のプレイヤー初期資本 |
 
-- 通貨総量の初期供給: 各国 `CB:<cc>` が genesis で `M0_initial = agents_per_country × 平均初期現金 + GOV初期現金` を自国通貨でミントし ([0.10](00-glossary.md) 中央銀行発行)、エンドウメント配賦の原資とする。ミントは `mint_id` を持つ ([0.9](00-glossary.md))。
+- 通貨総量の初期供給: 各国 `CB:<cc>` は genesis で**自国通貨 `CUR:<cc>` の総配賦額をちょうどミント**する。すなわち `M0_initial[cc] = Σ(その通貨を受け取る全エンティティの初期 `CUR:<cc>` 配賦額)` であり、内訳は (1) 自国居住エージェント (労働者系・経営者・投資家・公共系)、(2) **自国居住の MM が保有する自国通貨分**、(3) **他国居住 MM が保有する自国通貨分** (MM は全6通貨を各 `5000000` 保有するため、`CUR:<cc>` は全12 MM が保有する。16.7.2)、(4) 自国の genesis 企業 (各 `genesis_initial_cash`)、(5) `GOV:<cc>` の初期現金、の合計である。中央銀行はこの総額のみをミントし、配賦後に余剰・不足を残さない (保存則 [0.10](00-glossary.md)/[0.17](00-glossary.md)、ミントは `mint_id` [0.9](00-glossary.md))。
+  - 既定値での概算 (1国): 居住者 `33,130,000` + 自国firms `9,600,000` + 他国MM保有 `50,000,000`(=10 MM×5M) + GOV `100,000,000` ≈ `192,730,000`。旧式 `agents_per_country × 平均 + GOV` は MM の全通貨保有と企業分を取りこぼし約 `59,600,000` 過少となるため用いない。`M0_initial` は genesis 配賦の実額合計として定義する。
 
 ### 16.7.4 プレイヤーとルーム (`player.*`, `room.*`)
 
@@ -323,7 +327,7 @@ sequenceDiagram
 初期値は「経済が崩壊 (流動性枯渇・連鎖倒産・餓死連鎖) も暴走 (ハイパーインフレ・価格発散) もしない」定常近傍から開始することを目的に選ぶ。崩壊・暴走を避けるための設計則を以下に固定する。
 
 - **流動性**: 初期マネーサプライ `M0_initial`(16.7.3) は「平均的家計が約 6..10 ターン分の基礎消費を現金で賄える」水準に設定する。薄すぎると板が約定せず、厚すぎると即時インフレになる。労働者初期現金 50000 と消費財初期価格 (下記) はこの比から逆算する。
-- **初期価格**: genesis 市場には MM が初期気配を置く。基礎財の初期参照価格は「労働1単位の賃金で最終財を数単位買える」実質賃金が正になるよう設定する。例: `good.food` の初期参照価格 ≈ 3000 minor、`labor.unskilled` の初期賃金気配 ≈ 12000 minor/ターン。これにより初ターンから消費が成立する。
+- **初期価格**: genesis 市場には MM が初期気配を置く。基礎財の初期参照価格は「労働1単位の賃金で最終財を数単位買える」実質賃金が正になるよう設定する (正準の参照価格表は 16.15.1)。例: `good.food ≈ 2400` minor、`labor.unskilled` 賃金 ≈ 12000 minor/ターン (賃金で food 約5単位)。これにより初ターンから消費が成立する。全生産段の単段マージンが正になるよう 16.15.1 で較正済み。
 - **MM 配賦**: MM の潤沢な初期現金 (全6通貨 各 5000000) と主要コモディティ/上場銘柄の基準在庫 (16.7.2) により、全主要ペアに両側気配を供給し `price_band_bps`(±20%) 内の連続性を確保する。MM 不在ペアは価格未形成となるため、genesis では全 `good.*` / `labor.*` / 主要 FX に最低1 MM を割当てる。`perishable` ペアは在庫を持てないため当ターン需給で気配を建てる。
 - **税率**: 初期税率 (所得15% / 法人20% / 消費8%) は可処分所得を圧迫しすぎず、政府が補助金・福祉を回せる中庸値。高すぎると消費が止まり、低すぎると政府破綻 ([12](12-politics-and-government.md))。
 - **金利**: 政策金利初期 2.50% は実質正・名目低位。高すぎると投資・起業が止まり、低すぎると過剰信用。準備率 10% と合わせ信用乗数を抑制する ([11](11-finance-and-instruments.md))。
@@ -406,3 +410,123 @@ flowchart TD
 - 人名: エージェント母集団生成 (16.7) 時に割当 (`assign_person_names=true` のとき)。
 
 名前は [15](15-data-model.md) の表示名フィールド (`Country.name`・`Asset.display_name`・`Firm.display_name`・`Agent.display_name`) に格納し、API ([14](14-api-reference.md)) の国・エンティティ・企業レスポンスで公開する。同一 `(seed, WorldConfig)` から同一の名前割当が再現される ([0.2](00-glossary.md))。
+
+## 16.15 既定係数と参照価格 (Default Coefficients & Reference Prices)
+
+本節は各ドキュメントが「構成で与える既定値」とした未確定の係数・参照値を、実装可能な水準で確定する。値はコスト積み上げ・家計生存・戦闘曲線・金融計算のシミュレーションで妥当性 (採算性・生存・整合・決定論) を確認したものである。各ドキュメントの式はこれらの値を参照する。すべて minor 単位 (`minor_unit=1000`)・bps・整数。
+
+### 16.15.1 genesis 参照価格 (minor 単位)
+
+全市場の初回参照価格 `p_ref` (9.3.1, 16.11)。MM が初期気配を置く基準であり、`recipe_yield_scale=10` の下で供給連鎖マージンが正、家計が中核消費 (食料・水) を賄える水準に較正している。実数は構成で上書き可。
+
+労働 (`COMM:labor.*`、1単位あたり賃金気配):
+
+| labor | wage | labor | wage | labor | wage |
+| --- | --- | --- | --- | --- | --- |
+| unskilled | 12000 | factory | 12000 | health | 20000 |
+| farm | 11000 | office | 16000 | research | 22000 |
+| mine | 14000 | service | 11000 | soldier | 13000 |
+| build | 13000 | engineer | 22000 | | |
+
+財・サービス・資本財・軍需 (代表。`recipe_yield_scale=10` でレシピ [10 §10.4](10-industry-and-production.md) のコストを積み上げ、マークアップ約1.4で較正した自己整合値):
+
+| asset | p_ref | asset | p_ref | asset | p_ref |
+| --- | --- | --- | --- | --- | --- |
+| `energy.electricity` | 1400 | `mat.steel` | 3700 | `good.food` | 2400 |
+| `energy.fuel` | 1800 | `mat.flour` | 2300 | `good.food#drink`(水) | 1600 |
+| `agri.grain` | 2200 | `mat.lumber` | 2200 | `good.clothing` | 2300 |
+| `agri.vegetable` | 2200 | `mat.concrete` | 2900 | `good.medicine` | 6900 |
+| `agri.timber` | 1600 | `mat.fabric` | 2200 | `good.electronics` | 7000 |
+| `raw.iron_ore` | 4400 | `mat.components` | 5800 | `good.appliance` | 3600 |
+| `raw.coal` | 4200 | `mat.chemicals` | 6200 | `good.vehicle` | 7700 |
+| `raw.crude_oil` | 4200 | `mat.fertilizer` | 2600 | `svc.healthcare` | 3800 |
+| `raw.copper_ore` | 4200 | `mat.copper` | 3100 | `svc.education` | 5400 |
+| `build.construction_labor` | 4800 | `mat.plastics` | 2800 | `svc.leisure` | 2600 |
+| `mil.munitions` | 4600 | `svc.retail` | 1600 | `svc.transport` | 2000 |
+
+- 住居は `housing_tier ∈ {0,1,2,3}` で家賃/turn `{0, 2500, 5000, 10000}`(`svc.housing`、[05 §5.6](05-agents.md))。
+- 抽出財 (`raw.*`/`agri.*`) は採掘・農業労働 (例 `labor.mine`×2/ラン) が価格を律速するため `roughly 1,600..4,400` と相対的に高い。これに地域上限 ([04](04-world-and-geography.md)) の希少性レントが上乗せされる。高度財 (`good.electronics` 等) は `recipe_yield_scale` により1ランの埋め込み労働が小さく、意外に低価格になる。
+- 検証: 上記は全生産段の**単段マージンが正** (最小 約28%) となるよう積み上げ較正しており供給連鎖が閉じる (`recipe_yield_scale=1` では赤字で生産不成立、16.6)。`good.food=2400` に対し `labor.unskilled` 賃金 `12000` で約5単位購入でき (16.11 の「賃金で最終財数単位」と整合)、家計は中核消費＋住居を賄い長期 (10年) 生存可能であることを数値検証で確認した。
+
+### 16.15.2 戦闘係数 (doc 12 §12.5.4/§12.6)
+
+| キー | 既定 | 意味 |
+| --- | --- | --- |
+| `combat.mun_power` | 10 | 軍需品1単位の攻撃/防御火力 |
+| `combat.sol_power_atk` | 3 | 兵員1単位の攻撃力 |
+| `combat.sol_power_def` | 4 | 兵員1単位の防御力 (守備優位) |
+| `combat.fort_power` | 2 | fortification 1点の防御寄与 |
+| `combat.capture_exponent_k` | 2 | `P_capture = ratio^k/(ratio^k+1)` の指数 |
+| `combat.p_max_bps` | 9500 | 占領確率上限 (95.00%) |
+| `combat.ratio_scale` | 1000 | `ratio` の固定小数スケール (§12.5.4 整数化) |
+| `combat.attrition_atk_bps` | 6000 | 攻撃側 munitions 消耗率 (60%) |
+| `combat.attrition_def_bps` | 4000 | 防御側 munitions/fort 消耗率 (40%) |
+| `combat.cas_atk_bps` | 2000 | 占領成功時の追加兵員損耗 (20%) |
+| `combat.post_capture_fort` | 50 | 占領直後の fortification |
+| `combat.fort_build_coeff` | 5 | `build.construction_labor` 1単位あたり fort 増分 |
+| `combat.fort_max` | 1000 | fortification 上限 |
+| `combat.fort_decay_bps_per_turn` | 100 | fort 自然減衰 (1.00%/turn) |
+| `combat.fort_pop_coeff` | 1 | 人口→防御重み換算 (§12.5.5 `pop_weight`) |
+| `combat.budget_split` | `[5000,3000,2000]` bps | military_budget の {攻撃調達, 防御リザーブ, 要塞建設} 配分 (合計10000) |
+
+検証: `mun_power=10/sol_def=4/fort_power=2` で `ATK=DEF→P_capture=0.50`、`2×→0.80`、`5×→0.95(上限)`。x1000 固定小数の `P_capture` は浮動小数と誤差 < 0.001 で一致 (`ratio=ATK*1000//max(DEF,1)`, `r2=ratio*ratio//1000`, `P=min(9500, r2*10000//(r2+1000))` を bps で)。
+
+### 16.15.3 国家厚生関数の正規化係数 (doc 12 §12.9, doc 07 §7.5.5)
+
+`Welfare(c)` の各正規化項 `~` (∈[0,1]) を確定する。β重みは [12 §12.9](12-politics-and-government.md) (合計1.0)。
+
+| 項 | 正規化式 (整数 bps 演算) | 係数既定 |
+| --- | --- | --- |
+| `gdp~` | `sigmoid(real_growth_bps / gdp_growth_scale)` | `gdp_growth_scale = 300`(3%/年で約0.73) |
+| `employment~` | `1 - unemployment_bps/10000` | — |
+| `happiness~` | `avg_happiness/100` | — |
+| `price_stability~` | `exp(-((inflation_bps - cpi_target_bps)/price_band_bps)^2)` | `cpi_target_bps=200`(2%), `price_band_bps=300` |
+| `fiscal_sustainability~` | `1 - clamp(debt_to_gdp_bps / gov_debt_ceiling_ratio_bps, 0, 1)` | `gov_debt_ceiling_ratio_bps=25000` |
+| `territory~` | `owned_cells / 9216` | — |
+| `security~` | `0.5·avg_security/100 + 0.3·min(1, munitions/mun_ref) + 0.2·front_stability` | `mun_ref=500` |
+
+選挙評価 (§12.10) `eval_i = 0.6·welfare_contrib_i + 0.2·promise_align_i + 0.2·avg_loyalty_c/100`。`welfare_contrib_i` は在任中の `ΔWelfare(c)` への寄与 (等重みなら全員同値→loyalty/公約で差がつく)。`promise_align_i` は提案と確定政策の整合度 (∈[0,1])。再選ボーナス `ε_term = 0.1`。
+
+### 16.15.4 マーケットメイカー係数 (doc 09 §9.7)
+
+| キー | 既定 | 意味 |
+| --- | --- | --- |
+| `mm.base_spread_bps.fx` | 10 | FX の基準スプレッド |
+| `mm.base_spread_bps.commodity` | 40 | コモディティ |
+| `mm.base_spread_bps.bond` | 20 | 債券 |
+| `mm.base_spread_bps.equity` | 60 | 株式 |
+| `mm.inventory_skew_coeff` | 5000 bps | 在庫乖離→気配傾けの強さ (`skew = inventory_skew_coeff × (inv-target)/target_band`) |
+| `mm.quote_size_frac_bps` | 200 | 片側気配数量 = 担当資本の 2.00% 相当 |
+| `mm.target_inv_frac_bps` | 5000 | 目標在庫 = 初期基準在庫の 50% を中立 |
+
+`mid = p_ref`(クロスレート整合補正後)、`bid=floor(mid×(1-spread/2))`, `ask=ceil(mid×(1+spread/2))`(9.7.3)。`spread = base_spread + inventory_skew`。
+
+### 16.15.5 ML 報酬係数 (doc 07 §7.5)
+
+[07](07-machine-learning.md) の報酬式の既定係数。学習段階 (カリキュラム C0..C4) で調整可。
+
+| キー | 既定 | 用途 |
+| --- | --- | --- |
+| `ml.b_alive` | 0.01 | WORKER 生存ボーナス/turn (7.5.1) |
+| `ml.D_death` | 5.0 | 死亡ペナルティ (終端) |
+| `ml.D_bankrupt` | 3.0 | 倒産ペナルティ (ENTREPRENEUR) |
+| `ml.w_wealth` | 0.1 | 富成長項重み |
+| `ml.w_ret` / `ml.w_rank` / `ml.w_dd` | 1.0 / 0.3 / 0.2 | INVESTOR リターン/順位/ドローダウン |
+| `ml.w_loss` / `ml.w_gain` | 1.0 / 0.1 | MM 在庫毀損/増加 (非対称、7.5.3) |
+| `ml.w_spread` / `ml.w_fill` / `ml.w_dev` | 0.2 / 0.5 / 0.3 | MM スプレッド/約定率/乖離 |
+| `ml.cpi_target_bps` (`π_target`) | 200 | CENTRAL_BANKER インフレ目標 (2%) |
+| `ml.u_natural_bps` | 500 | 自然失業率 (5%、7.5.6) |
+| `ml.gamma` 既定/長期/短期 | 0.997 / 0.999 / 0.99 | 割引率プリセット (7.5.9) |
+| `ml.gae_lambda` | 0.95 | GAE |
+| `ml.w_invalid` | 0.05 | 無効行動シェーピング (7.5.10) |
+
+WORKER の `scale_w`、ENTREPRENEUR の `scale_p/m/c` 等の正規化スケールは各報酬を `tanh` 前に概ね `[-1,1]` へ収める値 (genesis 規模から導出、走行統計で更新、7.5.9) とし、推論時は凍結する。
+
+### 16.15.6 非温帯の季節係数 (doc 04 §4.4.2)
+
+温帯の作物別係数表は [04 §4.4.2](04-world-and-geography.md)。他気候帯は位相・振幅を変える: `tropical` 全月 `×1.1`(変動小)、`arid` 全月 `×0.4`、`continental`/`polar` は生育期 (5..9月) のみ温帯値、他月 `0`、`highland` は温帯値に `×(1 - elevation/16000)` を乗じ標高で低減。`timber` は全帯で季節非依存 (再生は [04 §4.3.3](04-world-and-geography.md))。
+
+### 16.15.7 YTM・金融数値 (doc 11)
+
+- YTM 二分法 (§11.4.4): 区間 `[-0.5, 5.0]`、**固定 64 反復**で打ち切り、結果を bps へ丸める。検証で許容誤差 1e-9 は約33反復、64反復で区間幅はサブ bps となり決定論的に一意。許容誤差ではなく固定回数で打ち切ることでプラットフォーム非依存。
+- `OutstandingShort[s]` (M2 加算項、§11.2.2): 残存満期1年未満 (`maturity_tick - tick < TURNS_PER_YEAR`) の `BILL:gov.s.*` 額面合計に、銀行モデル有効時は FINANCE 企業の預金性負債を加える。簡易モード (既定) では `M2 = M0` で本項は 0。

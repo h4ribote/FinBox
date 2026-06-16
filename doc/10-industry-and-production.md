@@ -102,6 +102,8 @@ q_out[r] = floor( min(
 - **投入材上限**: `L_input = min over m of floor( held_input[firm][m] / a[r][m] )`(レシピが要求する各素材 `m`(`mat/raw/agri/energy/good`) のうち最も不足するもの)。`held_input` は繰越在庫 + 当ターン P4 購入分。
 - **地域上限**: 抽出系 (`AGRICULTURE`/`MINING`) のみ `L_region = region_share[firm][asset_out]`(10.6 で按分された当ターンの取り分)。`ENERGY` を含む非抽出系は `L_region = +∞`。
 
+`q_out[r]` は当該レシピの**ラン数**である。実際の産出単位数は `produced = q_out[r] × output_qty_per_run[r] × recipe_yield_scale`(`output_qty_per_run` はレシピ産出係数。例 `energy.electricity` は4・`energy.fuel` は3、`recipe_yield_scale` の既定は 10、[16 §16.6](16-configuration-and-initialization.md))、投入消費は `q_out[r] × a[r][input]` で計算する。`recipe_yield_scale` は1労働ランが産む産出単位数を表し、これにより最終財の生産コストが参照価格 ([16 §16.15.1](16-configuration-and-initialization.md)) を下回り供給連鎖の採算が成立する (`recipe_yield_scale=1` だと埋め込み労働で最終財が赤字となり生産不成立、[16 §16.6](16-configuration-and-initialization.md) の根拠)。
+
 産出確定後、消費された投入は台帳から **消滅 (burn)** として `production_id` 付きで記録され、産出財は **生成 (mint)** として同 `production_id` で計上される (0.9, 0.10)。投入と産出は資産ごとに別々の生成/消滅であり、現金移動を伴わない (購入は P4 で完了済み)。余剰投入材 (storable) は在庫として翌ターンへ繰り越す。余剰労働力 (perishable) は消滅する。
 
 ## 10.4 代表的生産レシピ (Representative Recipes)

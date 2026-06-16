@@ -73,7 +73,7 @@ flowchart TD
 
 - **買いオペ (緩和)**: 中央銀行が `BILL`/`BOND` を市場で買う。支払う通貨を **mint** して市場決済に充てる → M0 増加 → 短期金利低下圧力。
 - **売りオペ (引締)**: 中央銀行が保有 `BILL`/`BOND` を市場で売る。受け取った通貨を **burn**(中央銀行口座から消滅) → M0 減少 → 短期金利上昇圧力。
-- **数量の決定**: `CENTRAL_BANKER` は当ターンの短期市場実効金利 `r_short[s]`(直近 `BILL` 約定利回り、11.5.4) と目標 `policy_rate[s]` の乖離を縮小する向きにオペ量を提示する。比例制御 `omo_qty = clamp( K_omo × (r_short - policy_rate) × OutstandingShort, -OMO_MAX, +OMO_MAX )` を既定とする (`K_omo`, `OMO_MAX` は構成、[16](16-configuration-and-initialization.md))。正なら売りオペ、負なら買いオペ。
+- **数量の決定**: `CENTRAL_BANKER` は当ターンの短期市場実効金利 `r_short[s]`(直近 `BILL` 約定利回り、11.5.4) と目標 `policy_rate[s]` の乖離を縮小する向きにオペ量を提示する。比例制御 `omo_qty = clamp( K_omo × (r_short - policy_rate) × OutstandingShort, -OMO_MAX, +OMO_MAX )` を既定とする (`K_omo`, `OMO_MAX` は構成、[16](16-configuration-and-initialization.md))。`OutstandingShort[s]` は残存満期1年未満の `BILL:gov.s.*` 額面合計 ([16 §16.15.7](16-configuration-and-initialization.md)、11.2.2 の `ShortClaims` と同基準)。`omo_qty` は round-half-up で整数化 (用語集 0.20)。正なら売りオペ、負なら買いオペ。
 - **mint/burn の記録**: 通貨の生成/消滅は `mint_id` を原因として台帳に単側記録される (二重仕訳の相手は「発行勘定」、用語集 0.9, 0.10)。債券側の授受は通常の二重仕訳約定。
 
 ```mermaid
@@ -140,7 +140,7 @@ P = Σ_{k=1..N} ( c / (1 + y·(t_k / TURNS_PER_YEAR)) ) + face / (1 + y·(T / TU
   N   = 残存クーポン回数
 ```
 
-  単利割引を正準とする (用語集 0.7 の利息=単利按分に整合)。`y` は二分法で `[−0.5, 5.0]` 区間を反復して求め bps へ丸める。
+  単利割引を正準とする (用語集 0.7 の利息=単利按分に整合)。`y` は二分法で `[−0.5, 5.0]` 区間を**固定 64 反復**で求め bps へ丸める ([16 §16.15.7](16-configuration-and-initialization.md))。許容誤差ではなく固定反復回数で打ち切ることでプラットフォーム間でビット一致する (検証で誤差 1e-9 は約33反復、64反復で区間幅はサブ bps)。
 
 - **BILL の利回り (割引利回り)**: `y_bill = ((face − P) / P) × (TURNS_PER_YEAR / T)`。割引証券は満期に額面、購入時は `P < face`。
 - **対国債スプレッド**: 後述の社債・他国債の利回りから、同満期の自国国債 YTM を引いた差 (bps) を信用スプレッドとする。`SOVEREIGN_DEFAULT` 後はその国の発行銘柄のクリアリング価格が低下し、内生的に利回り (=調達コスト) が上昇する。

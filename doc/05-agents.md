@@ -71,7 +71,7 @@ flowchart LR
 労働を供給しないターン (P1 で労働行動を提出しない、または提出量が0) を「休息ターン」とみなし、`stamina` と `rest` を回復する。
 
 - `rest` 回復: 休息ターンに `rest ← clamp(rest + 20 + 0.15·comfort + 5·q_leisure)`。労働ターンは `rest ← clamp(rest − rest_cost(k)·Q_labor)`。
-- `stamina` 回復: `stamina ← clamp(stamina + base_recovery·(rest/100)·health_factor·hydration_factor)`。`base_recovery = 30`、`health_factor = 0.6 + 0.4·(health/100)`(health<25 で 0.6×)、`hydration_factor = min(1, 0.7 + 0.3·hydration/100)`。
+- `stamina` 回復: `stamina ← clamp(stamina + base_recovery·(rest/100)·health_factor·hydration_factor)`。`base_recovery = 30`、`health_factor = 0.6 + 0.4·(health/100)`(連続式。`health=0→0.6`, `health=100→1.0`。`health<25` でも本連続式が返す低値をそのまま用い、別途 `0.6×` の倍率は重ねない=二重適用の回避)、`hydration_factor = min(1, 0.7 + 0.3·hydration/100)`。
 - 部分労働は可能。`Q_labor < stamina/stamina_cost(k)` を選べば余力を残して回復を兼ねられる。これにより方策 (07) は労働と休息のトレードオフを学習する。
 
 ### 5.2.5 マズロー的優先順位と happiness 合成
@@ -95,7 +95,7 @@ flowchart TD
   HSTAR --> HAP["happiness ← 0.4·happiness + 0.6·H*"]
 ```
 
-- 階層充足度: `s_L1 = mean(satiety, hydration, health, stamina, rest)/100`、`s_L2 = mean(security, comfort)/100`、`s_L3 = social/100`、`s_L4 = mean(leisure, wealth_rel)/100`、`s_L5 = mean(education, mean_k skill[k], loyalty)/100`。`wealth_rel = clamp(50 + 25·log2(1 + wealth/wealth_median))` は中央値比の相対資産。
+- 階層充足度: `s_L1 = mean(satiety, hydration, health, stamina, rest)/100`、`s_L2 = mean(security, comfort)/100`、`s_L3 = social/100`、`s_L4 = mean(leisure, wealth_rel)/100`、`s_L5 = mean(education, mean_k skill[k], loyalty)/100`。`wealth_rel = clamp(50 + 25·log2(1 + wealth/wealth_median))` は中央値比の相対資産。`wealth_median` は当該エージェントの**居住国**の生存エージェントの `wealth`(WUI換算) の中央値で、P9 ADVANCE 開始時の台帳スナップショットから算定する ([16](16-configuration-and-initialization.md))。`wealth_median = 0` のとき `wealth_rel = 50`(中立) とする (ゼロ除算回避)。
 - ゲート付き目標 `H*`: `H* = 100·( w1·s_L1 + w2·g1·s_L2 + w3·g1·g2·s_L3 + w4·g1·g2·g3·s_L4 + w5·g1·g2·g3·g4·s_L5 )`。ゲート `g_i = smooth(s_Li)`、`smooth(s) = s^0.5`(下位が低いと上位寄与を抑制)。既定重み `w = (0.34, 0.22, 0.16, 0.16, 0.12)`(`Σw = 1`)。
 - これにより、空腹・病気のエージェントには余暇や教育が幸福へほとんど寄与せず、まず生理ニーズを満たす消費を優先する方策が学習される。重み・指数は構成可能 ([16](16-configuration-and-initialization.md))。
 
@@ -107,7 +107,7 @@ flowchart TD
 - 教育による成長: `STUDENT` ロールまたは `svc.education` 消費で `skill[k]`(教育課程が対象とする種別) と `education` が伸びる。`skill[k] ← clamp(skill[k] + δ_edu·q_education)`、`δ_edu = 0.8`。教育は実務 (就労) なしでも一定まで skill を伸ばせるが、上限は `60 + 0.4·education` でクランプ (高度技能は就労経験を要する)。
 - 不使用減衰: そのターンに `k` を一切供給せず教育もしないと `skill[k] ← clamp(skill[k] − decay_skill)`、`decay_skill = 0.1`。
 - 産出量への反映: エージェントが種別 `k` に供給できる労働量は `Q_labor(k) = floor( base_units·(0.5 + 0.5·skill[k]/100)·stamina_factor )`。`base_units = 10`、`stamina_factor = min(1, stamina/stamina_cost(k))`。すなわち高 skill かつ高 stamina ほど多くの `COMM:labor.k` を生産できる。
-- 種別と前提: 高度技能種別 (`engineer`, `research`, `health`, `office`) は最低 `education ≥ edu_gate(k)` を満たさないと skill が `cap_low(k)` 以上に上がらない。`edu_gate` 既定: engineer 40, research 50, health 45, office 25, それ以外 0。これがロール配属・転職 (06) の前提条件になる。
+- 種別と前提: 高度技能種別 (`engineer`, `research`, `health`, `office`) は最低 `education ≥ edu_gate(k)` を満たさないと skill が `cap_low(k)` 以上に上がらない。`edu_gate` 既定: engineer 40, research 50, health 45, office 25, それ以外 0。`cap_low(k)` 既定 30 (学歴ゲート未達時の skill 上限、[16](16-configuration-and-initialization.md))。これがロール配属・転職 (06) の前提条件になる。
 
 | labor 種別 `k` | `stamina_cost` | `rest_cost` | `edu_gate` | 主要ロール |
 | --- | --- | --- | --- | --- |
@@ -138,12 +138,14 @@ P6 CONSUME のニーズ更新後に死亡判定、続いて出生判定を行う
 - 加齢死 (確率死): 各ターン `p_age = 1 − exp( −(age_years / AGE_SCALE)^AGE_SHAPE / TURNS_PER_YEAR )`。Gompertz 型。`AGE_SCALE = 85`(年)、`AGE_SHAPE = 7`。`age_years ≥ AGE_MAX = 110` で `p = 1`(確定死)。
 - 戦闘・災害死: [12 政治と統治](12-politics-and-government.md) (軍事 P8) と [04](04-world-and-geography.md) (災害イベント) が指定するセル単位の死亡。本書の確率死とは独立に発火する。
 
+死因の評価順と乱数: 死因は**独立に評価し、評価順は餓死/脱水 → 病死 → 加齢死**で固定する (最初に成立した死因で確定)。各確率事象は個体派生サブシード `rng(tick, "demography", entity_id)` からの**死因ごと独立ドロー**で引き、走査順に依存しない ([03 §3.6.1](03-time-and-turns.md))。
+
 ### 5.4.2 相続 (資産の扱い)
 
 死亡時、台帳の保存則 (用語集 0.17) を維持したまま現物残高を移転する。ニーズ状態は破棄する (Tradable でないため移転対象外)。
 
-- 相続人の決定: 死者と同一世帯 (5.7) の生存成人 (`age_years ≥ AGE_ADULT`) のうち最年長を相続人とする。複数いれば世帯員へ均等割 (端数は最年長へ寄せ、整数を保つ)。
-- 世帯に成人がいない場合: 未成年が残る世帯は最近接セルの里親世帯へ編入し、資産も同様に移転する。生存者が皆無 (世帯消滅) の場合、現物残高は所在国政府 `GOV:<country>` へ無主財産として帰属する (プロトコル移転, 用語集 0.10)。
+- 相続人の決定: 死者と同一世帯 (5.7) の生存成人 (`age_years ≥ AGE_ADULT`) のうち最年長を相続人とする (同年齢の最年長が複数のときは `entity_id` 昇順で一意化)。複数いれば世帯員へ均等割 (端数は最年長へ寄せ、整数を保つ)。
+- 世帯に成人がいない場合: 未成年が残る世帯は最近接セルの里親世帯へ編入し、資産も同様に移転する (等距離の里親世帯候補が複数のときは `cell_id` 昇順、次いで `household_id` 昇順で一意化)。生存者が皆無 (世帯消滅) の場合、現物残高は所在国政府 `GOV:<country>` へ無主財産として帰属する (プロトコル移転, 用語集 0.10)。
 - 金融商品の扱い: `BOND/BILL/EQ/FUT` も現物残高として相続人へ移転する。発行体や枚数は変わらないため保存則を破らない。未決済の与信・負債は [11 金融と金融商品](11-finance-and-instruments.md) の清算規則に従い相続人へ承継する。
 - 企業持分: 経営者 (`ENTREPRENEUR`) が死亡しても `FIRM` は存続する。保有 `EQ:firm.*` が相続されることで支配権が移る。相続人不在で企業が無主化した場合は [10 産業と生産](10-industry-and-production.md) の倒産・清算手続に入る。
 
@@ -151,7 +153,7 @@ P6 CONSUME のニーズ更新後に死亡判定、続いて出生判定を行う
 
 人口を維持・変動させるため、世帯単位で出生を評価する。人口総数と地域分布は [04 世界と地理](04-world-and-geography.md) の人口モデルと整合させる (本書は個体生成規則、04 は総量・分布制約を担う)。
 
-- 出生確率: 出生可能世帯 (成人女性相当の生殖可能個体を含む、`AGE_FERTILE = [18, 45]` 年) について `p_birth = p_base_birth·fertility(country)·f_econ·f_need`。`p_base_birth = 0.015`/ターン。`f_econ = clamp01(0.5 + 0.5·household_wealth_rel)`、`f_need = clamp01(mean(satiety,health,security,happiness)/100)`(生活が安定なほど出生増)。`fertility(country)` は政策・人口ピラミッドから [12](12-politics-and-government.md) が供給。
+- 出生確率: 出生可能世帯 (`AGE_FERTILE = [18, 45]` 年の成人を含む世帯。エージェントは性別属性を持たず、出生判定は性別非依存で世帯内の生殖可能年齢成人の有無で行う) について `p_birth = p_base_birth·fertility(country)·f_econ·f_need`。`p_base_birth = 0.015`/ターン。`f_econ = clamp01(0.5 + 0.5·household_wealth_rel)`、`f_need = clamp01(mean(satiety,health,security,happiness)/100)`(生活が安定なほど出生増)。`fertility(country)` は政策・人口ピラミッドから [12](12-politics-and-government.md) が供給。
 - 04 との整合: 各国の総人口は 04 が定める収容上限 `pop_cap(country)` と目標人口経路に対しスケーリングされる。出生・死亡・移住の純増減が `pop_cap` を超える場合、出生確率を一律係数 `min(1, headroom/expected_births)` で抑制する (決定論的クランプ)。
 - 新生児の初期状態: `age = 0`、生理ニーズ `= 70`(初期エンドウメント的)、`skill[*] = 0`、`education = 0`、`home_cell = 親世帯のセル`、初期残高は親世帯からの少額移転 (プロトコル移転ではなく扶養、台帳上は親の残高に内包し独立残高は最小)。`primary_role = STUDENT`(`AGE_ADULT` 未満)。
 - 成人時のロール配属: `age_years` が `AGE_ADULT = 18` に達したターンに方策 (07) と労働市場需給から初期就労ロールを決める。決定は「skill ベクトルが最も高い種別」と「居住セルで需要(求人=企業の `labor.*` 買い注文, 10) が逼迫している種別」のスコア合成で行い、対応する労働者系ロール (06) を `primary_role` に設定する。就労先が無ければ `UNEMPLOYED`。教育継続を選べば `STUDENT` を継続。
@@ -217,13 +219,14 @@ P1 で提出する行動ベクトルは以下のサブ行動を束ねる。role-
 
 ### 5.5.4 stress/happiness による生産性調整
 
-`stress > 70`・`happiness < 30`・`health < 25`・`rest < 20` の各条件は労働産出に乗算ペナルティを与える。総合生産性係数 `prod_mult = (stress>70 ? 0.8:1)·(happiness<30 ? 0.85:1)·(health<25 ? 0.85:1)·(rest<20 ? 0.9:1)` を `Q_labor(k)` に乗じる。これにより厚生の悪化が直接所得を下げ、方策に厚生維持の動機を与える。
+`stress > 70`・`happiness < 30`・`health < 25`・`rest < 20` の各条件は労働産出に乗算ペナルティを与える。総合生産性係数 `prod_mult = (stress>70 ? 0.8:1)·(happiness<30 ? 0.85:1)·(health<25 ? 0.85:1)·(rest<20 ? 0.9:1)`。労働産出は `prod_mult` を 5.3 の式に乗じた上で**一度だけ floor** する: `Q_labor(k) = floor(base_units·(0.5 + 0.5·skill[k]/100)·stamina_factor·prod_mult)`(中間で丸めず最後に floor、用語集 0.20)。これにより厚生の悪化が直接所得を下げ、方策に厚生維持の動機を与える。
 
 ## 5.6 消費行動と住居
 
 P6 CONSUME で、エージェントは P4 までに取得した保有財・サービスを消費してニーズを回復する。消費は方策が P1 で提出した「消費計画 (各 `asset_id` の消費量上限)」と保有量・ニーズ状態から決定論的に実行する。
 
 - 予算配分 (必需 vs 余暇): 方策は所得・残高をニーズ階層 (5.2.5) に従い配分する。生理ニーズが閾値割れ (`satiety<20`, `hydration<15`, `health<25`) の場合、エンジンは食料・水・医療の消費を余暇消費より優先する安全弁 (P2 VALIDATE 時の自動補正は行わず、報酬設計 07 とマズロー合成 5.2.5 で誘導) を持つ。方策の自由度は保つが、生存を軽視する方策は報酬 (07) で淘汰される。
+- 消費の確定順 (P6, 決定論): 同一ニーズに複数の財がマップする場合 (例 `satiety` は `good.food` と `agri.*`)、**単位回復量の大きい財から**充当し、同回復量は `asset_id` 昇順で一意化する。エージェント間の走査は `entity_id` 昇順 ([03 §3.7](03-time-and-turns.md))。
 - 消費→回復の対応 (用語集 0.13 の詳細化):
 
 | ニーズ | 回復に用いる asset_id | 単位回復量 (既定) |
