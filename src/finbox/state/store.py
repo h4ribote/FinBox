@@ -41,6 +41,9 @@ class StateStore:
     # politics (M6)
     politicians: tuple[EntityId, ...] = ()
     policy: dict[str, int] = field(default_factory=dict)   # e.g. tax_bps, welfare_bps
+    # ML control (M9): agents whose consumption order is supplied externally (RL policy),
+    # not by the scripted policy. Control metadata only; not part of the serialized state.
+    rl_agents: set = field(default_factory=set)
 
     def qty(self, e: EntityId, a: AssetId) -> int:
         return self.ledger.get(e, a)

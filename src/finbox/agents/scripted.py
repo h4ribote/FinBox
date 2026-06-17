@@ -52,9 +52,13 @@ def generate_orders(store, config) -> list[ProtoOrder]:
         if lq > 0:
             p = _pair(store, la)
             out.append(ProtoOrder(a, p, Side.SELL, OrderType.LIMIT, store.last_price[p.pair_id], lq))
+        # RL-controlled agents get their food order from the policy (injected externally)
+        if a in store.rl_agents:
+            continue
         if store.satiety[a] < config.satiety_buy_threshold and store.cash(a) > 0:
             need = (100 - store.satiety[a] + config.satiety_per_food - 1) // config.satiety_per_food
             if need > 0:
                 p = _pair(store, store.food)
                 out.append(ProtoOrder(a, p, Side.BUY, OrderType.LIMIT, store.last_price[p.pair_id], need))
     return out
+
