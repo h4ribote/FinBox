@@ -52,7 +52,7 @@ erDiagram
   TRADE }o--|| MARKETPAIR : on
   TRADE }o--|| ENTITY : buyer
   TRADE }o--|| ENTITY : seller
-  TRANSFER ||--|{ LEDGERLINE : debits_credits
+  POSTING ||--|{ LEDGERLINE : debits_credits
   GOVERNMENT ||--o{ POLICY : enacts
   POLICY ||--o{ POLICYVOTE : aggregated_from
   FIRM ||--o{ PRODUCTIONPLAN : plans
@@ -105,7 +105,7 @@ erDiagram
 | `country_code` | `id<Country>` | 必須 | 所属国 (外部キー) |
 | `name` | `str` | — | 地域名 |
 | `cell_ids` | `list<id<Cell>>` | 非空 | 構成マス |
-| `climate` | `enum<Climate>` | `{POLAR,TEMPERATE,ARID,TROPICAL,CONTINENTAL,HIGHLAND}`(6帯) | 気候帯 ([04](04-world-and-geography.md), [16](16-configuration-and-initialization.md)) |
+| `climate` | `enum<Climate>` | `{TROPICAL,ARID,TEMPERATE,CONTINENTAL,POLAR,HIGHLAND}`(6帯、緯度帯順) | 気候帯 ([04 §4.4.1](04-world-and-geography.md), [16](16-configuration-and-initialization.md)) |
 | `extraction_caps` | `map<asset_id, uint>` | 値 `≥ 0` | 抽出系産業の地域総産出上限 ([00 §0.15](00-glossary.md), [10](10-industry-and-production.md)) |
 
 ### Cell
@@ -249,7 +249,7 @@ erDiagram
 | `auth_token_hash` | `str` | — | 認証 ([14](14-api-reference.md))。生の鍵は保存しない |
 | `joined_tick` | `uint` | — | 参加 tick |
 
-## 15.6 台帳 (Balance / Transfer)
+## 15.6 台帳 (Balance / Posting)
 
 台帳の意味論は [08](08-economy-and-ledger.md)、不変条件は [00 §0.9, §0.17](00-glossary.md)。
 
@@ -263,14 +263,14 @@ erDiagram
 
 主キーは `(entity_id, asset_id)`。疎表現とし `quantity==0` は省略可。**現物残高は決して負にならない**: 空売り・借入は金融商品の負債計上 (`BOND` 発行残高・`Position` のショート) で表現する ([11](11-finance-and-instruments.md))。
 
-### Transfer (二重仕訳)
+### Posting (二重仕訳)
 
-1件の移転は資産ごとに借方合計=貸方合計となる仕訳明細の集合。市場決済もプロトコル移転も同一構造で記録する ([00 §0.10](00-glossary.md))。
+1件の posting は資産ごとに借方合計=貸方合計となる仕訳明細の集合。市場決済もプロトコル移転も同一構造で記録する ([00 §0.10](00-glossary.md), [08 §8.4](08-economy-and-ledger.md))。
 
 | フィールド | 型 | 制約 | 説明 |
 | --- | --- | --- | --- |
-| `transfer_id` | `str` | 一意 | 移転識別子 |
-| `cause` | `enum<Cause>` | `{TRADE,PRODUCTION,FISCAL,MINT,BURN,GENESIS,DIVIDEND,COUPON,REDEEM,SUBSIDY,TAX,TARIFF,MILITARY,LIQUIDATION}` | 原因種別 ([00 §0.10](00-glossary.md)) |
+| `posting_id` | `uint` | 単調増加・一意 | 記帳識別子 (リプレイ順序、[08 §8.4](08-economy-and-ledger.md)) |
+| `cause` | `enum<Cause>` | `{TRADE,PRODUCTION,CONSUMPTION,FISCAL,TAX,TARIFF,SUBSIDY,COUPON,REDEEM,DIVIDEND,MINT,BURN,MILITARY,LIQUIDATION,GENESIS,EXPIRE}` | 原因種別 ([00 §0.10](00-glossary.md), [08 §8.4.2](08-economy-and-ledger.md)) |
 | `cause_ref` | `str?` | — | 原因の参照 (`trade_id`/`production_id`/`policy_id`/`battle_id`) |
 | `tick` | `uint` | — | 発生ターン |
 | `phase` | `enum<Phase>` | `P0..P9` ([00 §0.11](00-glossary.md)) | 発生フェーズ |
@@ -284,7 +284,7 @@ erDiagram
 | `asset_id` | `id<Asset>` | 外部キー | 資産 |
 | `delta` | `int` | `≠ 0` | 増減 (借方=正の受取, 貸方=負の払出) |
 
-**二重仕訳不変条件**: 任意の `asset_id` について `Σ delta == 0`。ただし `cause∈{MINT,BURN,PRODUCTION,GENESIS}` の生成/消滅点では当該資産の総和が非ゼロとなることを許容し、それ以外では総和ゼロ (保存) を強制する ([00 §0.10, §0.17](00-glossary.md))。各ラインの適用後 `balance ≥ 0` でなければ移転全体を棄却する。
+**二重仕訳不変条件**: 任意の `asset_id` について `Σ delta == 0`。ただし `cause∈{MINT,BURN,PRODUCTION,CONSUMPTION,GENESIS,MILITARY,EXPIRE,REDEEM,LIQUIDATION}` の生成/消滅点では当該資産の総和が非ゼロとなることを許容し、それ以外では総和ゼロ (保存) を強制する ([00 §0.10, §0.17](00-glossary.md))。各ラインの適用後 `balance ≥ 0` でなければ posting 全体を棄却する。
 
 ## 15.7 市場 (MarketPair / OrderBook / Order / Trade / OHLCBar)
 
@@ -313,12 +313,12 @@ erDiagram
 | `pair_id` | `id<MarketPair>` | 外部キー | 対象ペア |
 | `side` | `enum<Side>` | `{BUY,SELL}` | 売買方向 |
 | `order_type` | `enum<OrderType>` | `{LIMIT,MARKET,IOC,FOK}` | 注文種別 ([00 §0.19](00-glossary.md), [09](09-markets-and-trading.md)) |
-| `price` | `uint?` | `LIMIT` で必須, `tick_size` の倍数 | 指値 (`quote` 単位) |
-| `quantity` | `uint` | `> 0`, `lot_size` の倍数 | 数量 |
-| `filled` | `uint` | `0 ≤ filled ≤ quantity` | 約定済数量 |
+| `limit_price` | `uint?` | `LIMIT` で必須, `tick_size` の倍数 | 指値 (`quote` 単位) |
+| `qty` | `uint` | `> 0`, `lot_size` の倍数 | 数量 |
+| `filled` | `uint` | `0 ≤ filled ≤ qty` | 約定済数量 |
 | `tif` | `enum<TIF>` | `{GFT,GTC,GTT}`(既定 `GFT`) | 有効期間 ([00 §0.19](00-glossary.md)) |
-| `expires_tick` | `uint?` | `tif==GTT` で必須・`> submit_tick`, それ以外 `null` | `GTT` の失効 tick ([00 §0.19](00-glossary.md)) |
-| `submit_tick` | `uint` | — | 提出ターン (P1) |
+| `expires_tick` | `uint?` | `tif==GTT` で必須・提出 tick より後, それ以外 `null` | `GTT` の失効 tick ([00 §0.19](00-glossary.md)) |
+| `submit_seq` | `uint` | — | 提出順序キー (P1、時間優先 [09 §9.6.3](09-markets-and-trading.md)) |
 | `status` | `enum<OrderStatus>` | `{OPEN,PARTIAL,FILLED,CANCELLED,REJECTED,EXPIRED}` | 状態 |
 
 検証 (P2): `side==BUY` は必要 `quote` 残高 (`price×quantity` 上限) を、`side==SELL` は `base` 残高を保有していること。不足は棄却またはクランプ ([00 §0.11](00-glossary.md))。
@@ -333,7 +333,7 @@ erDiagram
 | `last_price` | `uint?` | — | 直近約定価格 |
 | `last_clear_tick` | `uint` | — | 最終板寄せ tick (P4) |
 
-板寄せは P4 で単一清算価格を決定し ([09](09-markets-and-trading.md))、約定を `Trade` として生成、台帳へ `cause==TRADE` の `Transfer` で反映する。
+板寄せは P4 で単一清算価格を決定し ([09](09-markets-and-trading.md))、約定を `Trade` として生成、台帳へ `cause==TRADE` の `Posting` で反映する。
 
 ### Trade / Fill
 
@@ -353,7 +353,7 @@ erDiagram
 | `fee_buy`, `fee_sell` | `uint` | `= ceil(cash × fee_rate)` | `EXCH` 収受手数料 |
 | `tick` | `uint` | — | 約定ターン (P4) |
 
-不変条件: `buyer ≠ seller`。生成する `Transfer` は `base` で `+quantity`(buyer)/`-quantity`(seller)、`quote` で `-(cash+fee_buy)`(buyer)/`+cash`(seller)/`+(fee_buy+fee_sell)`(EXCH) と各資産で総和ゼロ。
+不変条件: `buyer ≠ seller`。生成する `Posting` は `base` で `+quantity`(buyer)/`-quantity`(seller)、`quote` で `-(cash+fee_buy)`(buyer)/`+cash`(seller)/`+(fee_buy+fee_sell)`(EXCH) と各資産で総和ゼロ。
 
 ### OHLCBar
 

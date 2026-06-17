@@ -111,6 +111,7 @@ Posting:
 | `mint_id` | P7 | 通貨発行/吸収1件 (中央銀行) |
 | `military_id` | P8 | 軍需品消費・戦闘解決による消滅 |
 | `liquidation_id` | P4/P7 | 倒産清算の残余分配 |
+| `expire_id` | P9 | perishable (`labor.*`/`svc.*`/`energy.electricity`) 未使用残高の強制バーン ([8.9.4](#894-perishable-の失効-p9-advance)) |
 | `genesis_id` | P-init | 初期エンドウメント配賦 ([16](16-configuration-and-initialization.md)) |
 
 ### 8.4.3 監査ログ
@@ -410,7 +411,7 @@ flowchart LR
 
 ### 8.9.4 perishable の失効 (P9 ADVANCE)
 
-P9 で、`perishable` 資産 (`labor.*`/`svc.*`/`energy.electricity`) のうち未使用の残高を強制バーンする。これは保存則の例外ではなく定義されたバーン点である ([00 §0.5.3](00-glossary.md), [00 §0.17](00-glossary.md))。原因は専用の `transfer_id` (失効) で記帳され監査可能。
+P9 で、`perishable` 資産 (`labor.*`/`svc.*`/`energy.electricity`) のうち未使用の残高を強制バーンする。これは保存則の例外ではなく定義されたバーン点である ([00 §0.5.3](00-glossary.md), [00 §0.17](00-glossary.md))。原因は専用の `expire_id` (失効、cause `EXPIRE`) で記帳され監査可能。
 
 | asset_id | from | to | quantity | 種別 |
 | --- | --- | --- | --- | --- |

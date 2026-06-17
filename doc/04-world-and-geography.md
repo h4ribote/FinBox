@@ -77,6 +77,7 @@ Cell は世界状態の最小単位であり、以下の属性を保持する。
 
 - `coast` は唯一 `COMM:agri.fish` の産出地。内陸セルの fish ポテンシャルは 0。
 - `mountain`/`desert`/`tundra` は鉱床スポット (4.5) の出現確率が高く、農業ポテンシャルは低い。
+- `terrain` の正準列挙トークンは大文字 (`PLAIN`/`FOREST`/`MOUNTAIN`/`DESERT`/`COAST`/`TUNDRA`/`SWAMP`、宣言順=正準) であり、データモデル [15 §15.3](15-data-model.md) を唯一の正準とする。本書の表・散文では可読性のため小文字で記すが同一の列挙値を指す。
 
 ## 4.3 資源産出・地域上限・減耗と再生 (Resource Yield, Caps, Depletion & Regeneration)
 
@@ -162,6 +163,7 @@ mineral_deposits[mineral].stock ← max(0, stock - mined(cell, mineral, t))
 | `polar` | 寒帯 | 低 | 少雨雪 | tundra |
 | `highland` | 高地 | 標高依存で低 | 変動 | mountain |
 
+- `climate_zone` の正準列挙トークンは大文字 (`TROPICAL`/`ARID`/`TEMPERATE`/`CONTINENTAL`/`POLAR`/`HIGHLAND`、宣言順=緯度帯順=正準) であり、データモデル [15 §15.3](15-data-model.md) を唯一の正準とする (本表の小文字は同一値の可読表記)。
 - `temperature`/`precipitation` のターン値は基準値に季節振幅を足したもの:
   ```
   temperature(cell, month) = base_temp + amp_temp(zone) × sin(2π × (month - phase(zone)) / 12)

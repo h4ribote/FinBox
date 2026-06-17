@@ -102,7 +102,7 @@ sequenceDiagram
   Note over C: 方策/プレイヤーが行動を計算
   C->>GW: POST /actions (注文・投票・生産計画・労働供給・軍事命令・企業操作)
   GW->>SB: P1 SUBMIT へバッファ (ack=受領、未確定)
-  GW-->>C: 202 Accepted (submission_id)
+  GW-->>C: 202 Accepted (accepted[]/rejected[]、client_ref で相関 14.5.1)
   Note over GW,SB: 締切到来 (提出窓口クローズ)
   SB->>EN: 収集済み intents を一括引き渡し
   EN->>EN: P2 VALIDATE → P3 GOVERN → P4 CLEAR → P5..P8

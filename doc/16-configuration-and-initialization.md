@@ -68,7 +68,8 @@ flowchart TD
 | `market.fee_rate_bps` | 5 | 取引手数料率 (bps, 0.05%)。`fee = ceil(cash × fee_rate)` を `EXCH` が収受 ([0.8](00-glossary.md)) |
 | `market.fx_fee_rate_bps` | 2 | FX ペアの手数料率 (bps)。FX は薄利化のため低め |
 | `market.tick_size` | 1 | 価格刻み (minor 単位)。最小価格変動 |
-| `market.price_band_bps` | 2000 | 1ターンの参照価格からの値幅制限 (±20%)。逸脱注文はクランプ ([09](09-markets-and-trading.md)) |
+| `market.price_band_bps[class]` | FX 500・コモディティ/労働 1500・株式 2000・債券 500 | 1ターンの参照価格からの資産クラス別サーキットブレーカー値幅 (例 株式 ±20%)。逸脱清算価格はクランプ ([09 §9.8.3](09-markets-and-trading.md)) |
+| `market.fx_fee_rate_bps` | 2 | FX ペア (両 base/quote が `CUR:*`) の手数料率 ([09 §9.2.4/9.6.1](09-markets-and-trading.md)) |
 | `market.max_open_orders` | 64 | 1エンティティ・1ペアあたりの未約定注文上限 |
 
 - WUI 初期加重: genesis 直後は6通貨等加重 (`1/6` ずつ)。`wui_reweight_period_turns` ごとに各国名目GDP×貿易シェアの正規化で再加重する ([11](11-finance-and-instruments.md))。`money.wui_weighting = EQUAL` の場合は再加重を行わず等加重を維持する。
@@ -134,8 +135,11 @@ flowchart TD
 | --- | --- | --- |
 | `production.recipe_yield_scale` | 10 | 全レシピの1ラン産出量への一括スケール (1 労働ラン → `recipe_yield_scale` 単位産出)。経済規模・労働生産性の基礎調整 |
 | `production.labor_intensity_scale` | 1.0 | 投入労働量への一括スケール |
-| `production.capacity_expand_per_build` | 1 | `COMM:build.construction_labor` 1単位消費あたりの設備能力増分 ([10](10-industry-and-production.md)) |
-| `production.depreciation_bps_per_turn` | 50 | 設備の減耗率 (0.50%/ターン)。年率換算 `≈ 21.4%` |
+| `production.capacity_expand_per_build` | 1 | `COMM:build.construction_labor` 1単位消費あたりの設備能力増分 `g` ([10 §10.7](10-industry-and-production.md)) |
+| `production.k_scale` | 100 | 能力拡張の規模逓減基準 `k_scale` ([10 §10.7](10-industry-and-production.md)) |
+| `production.capacity_min` | 10 | 設立直後の最小設備 ([10 §10.7/10.8.1](10-industry-and-production.md)) |
+| `production.capacity_max[industry]` | AGRICULTURE/MINING 50・ENERGY 80・CONSTRUCTION 60・MANUFACTURING 100・LOGISTICS 60・FINANCE/RESEARCH 40・SERVICES 60 | 産業別の能力上限 ([10 §10.7](10-industry-and-production.md)) |
+| `production.depreciation_bps_per_turn` | 50 | 設備の減耗率 (0.50%/ターン)。年率換算 `≈ 21.4%`。下限なし (放置した設備は 0 へ朽ちる、[10 §10.7](10-industry-and-production.md)) |
 | `production.resource_scale` | 1.0 | 資源スポット埋蔵量・地域抽出上限への一括スケール ([04](04-world-and-geography.md)) |
 | `production.resource_spots_per_region` | 3 | 1地域あたりの資源スポット期待数 (ポアソン平均) |
 | `production.resource_regen_bps_per_turn` | 5 | 再生可能資源 (`agri.*`) の再生率 (0.05%/ターン)。`raw.*` は再生なし (=0) |
@@ -332,7 +336,7 @@ sequenceDiagram
 - **税率**: 初期税率 (所得15% / 法人20% / 消費8%) は可処分所得を圧迫しすぎず、政府が補助金・福祉を回せる中庸値。高すぎると消費が止まり、低すぎると政府破綻 ([12](12-politics-and-government.md))。
 - **金利**: 政策金利初期 2.50% は実質正・名目低位。高すぎると投資・起業が止まり、低すぎると過剰信用。準備率 10% と合わせ信用乗数を抑制する ([11](11-finance-and-instruments.md))。
 - **減衰と致死**: ニーズ減衰 (16.5) と初期現金・初期価格の比は「健全な労働→消費ループで全ニーズが維持できる」よう調整する。学習初期は `STABLE_LEARN` で致死を無効化し、定常化後に有効化する。
-- **生産係数**: `recipe_yield_scale=1.0` を基準に、抽出→加工→最終財の各段の歩留まりが下流需要を満たす量比 ([10](10-industry-and-production.md)) になるよう種企業能力 (`genesis_initial_capacity=4`) と母集団規模 (各国100) を釣り合わせる。
+- **生産係数**: `recipe_yield_scale=10`(16.6) の下で、抽出→加工→最終財の各段の歩留まりが下流需要を満たす量比 ([10](10-industry-and-production.md)) になるよう種企業能力 (`capacity_min=10` 以上で設立、16.6) と母集団規模 (各国100) を釣り合わせる。`recipe_yield_scale=1` は赤字で生産不成立 (16.6 の根拠)。
 - **保存則の検証**: 初期化直後に全資産の総量・二重仕訳の借貸一致・非負残高を検証する不変条件チェック ([0.17](00-glossary.md)) を必須とし、違反時は初期化を中断する。
 
 ## 16.12 初期化シーケンス (全体)
