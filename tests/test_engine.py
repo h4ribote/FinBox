@@ -1,10 +1,6 @@
-"""Walking-skeleton integration: a full P0..P9 economy runs and stays consistent."""
+"""M4 integration: a multi-firm supply chain runs and stays consistent."""
 from finbox.engine import SkeletonEngine, run_skeleton
 from finbox.init import SkeletonConfig, genesis
-
-
-def _cur_total(c: SkeletonConfig) -> int:
-    return c.n_agents * c.agent_start_cash + c.firm_start_cash + c.gov_start_cash
 
 
 def test_runs_and_advances_tick():
@@ -14,63 +10,57 @@ def test_runs_and_advances_tick():
 
 
 def test_currency_conserved_every_turn():
-    c = SkeletonConfig()
-    store = genesis(c)
-    eng = SkeletonEngine(store, c)
-    total = _cur_total(c)
-    assert store.ledger.total_supply(store.cur) == total
+    store = genesis(SkeletonConfig())
+    eng = SkeletonEngine(store, SkeletonConfig())
+    total = store.ledger.total_supply(store.cur)  # genesis mint total
     for _ in range(96):
         eng.run_turn()
         assert store.ledger.total_supply(store.cur) == total  # only genesis mints currency
 
 
 def test_balances_non_negative_and_satiety_bounded():
-    c = SkeletonConfig()
-    store = genesis(c)
-    eng = SkeletonEngine(store, c)
+    store = genesis(SkeletonConfig())
+    eng = SkeletonEngine(store, SkeletonConfig())
     for _ in range(96):
         eng.run_turn()
         for row in store.ledger.balances().values():
             assert all(q >= 0 for q in row.values())
         assert all(0 <= store.satiety[a] <= 100 for a in store.agents)
-        assert store.ledger.total_supply(store.food) >= 0
-
-
-def test_economy_is_active():
-    c = SkeletonConfig()
-    store = genesis(c)
-    eng = SkeletonEngine(store, c)
-    traded = False
-    for _ in range(48):
-        eng.run_turn()
-        if store.macro["gdp"] > 0:
-            traded = True
-    assert traded, "expected some trades to clear"
 
 
 def test_perishable_labor_fully_expires_each_turn():
+    store = genesis(SkeletonConfig())
+    eng = SkeletonEngine(store, SkeletonConfig())
+    for _ in range(48):
+        eng.run_turn()
+        assert sum(store.ledger.total_supply(a) for a in store.labor_assets()) == 0
+
+
+def test_supply_chain_active():
+    # food is produced (agriculture), and the intermediate (fertilizer) trades:
+    # both require the upstream manufacturing firm, proving the chain connects.
+    store = genesis(SkeletonConfig())
+    eng = SkeletonEngine(store, SkeletonConfig())
+    food = store.food
+    produced_food = traded_value = False
+    for _ in range(48):
+        before = store.ledger.total_supply(food)
+        eng.run_turn()
+        if store.ledger.total_supply(food) > before:
+            produced_food = True
+        if store.macro["gdp"] > 0:
+            traded_value = True
+    assert produced_food and traded_value
+
+
+def test_capacity_evolves_with_construction_labor():
     c = SkeletonConfig()
     store = genesis(c)
     eng = SkeletonEngine(store, c)
+    agri = min(store.firms)  # FIRM:000001
+    start_cap = store.firms[agri].capacity
     for _ in range(48):
         eng.run_turn()
-        # labor is perishable: nothing carries past P9 expiry
-        assert store.ledger.total_supply(store.labor) == 0
-
-
-def test_firm_produces_food_under_region_cap():
-    c = SkeletonConfig()
-    store = genesis(c)
-    eng = SkeletonEngine(store, c)
-    produced_any = False
-    for _ in range(48):
-        before = store.ledger.total_supply(store.food)
-        eng.run_turn()
-        after = store.ledger.total_supply(store.food)
-        # food output per turn never exceeds the region cap
-        # (net change = produced - consumed; produced <= cap)
-        if after > before:
-            produced_any = True
-        # firm never holds more than it could produce + carry; cap respected at source
-    assert produced_any, "firm should produce food from labor"
-
+        assert c.capacity_min <= store.firms[agri].capacity <= c.capacity_max
+    # expanding firm should have grown capacity above its initial value
+    assert store.firms[agri].capacity > start_cap

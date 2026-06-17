@@ -25,6 +25,9 @@ def canonical_bytes(store: StateStore) -> bytes:
     for entity in sorted(store.satiety):
         parts.append(f"sat|{entity}|{store.satiety[entity]}")
 
+    for firm in sorted(store.firms):
+        parts.append(f"cap|{firm}|{store.firms[firm].capacity}")
+
     for key in sorted(store.macro):
         parts.append(f"macro|{key}|{store.macro[key]}")
 

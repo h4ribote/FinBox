@@ -1,8 +1,8 @@
-"""Runnable demo of the FinBox walking skeleton: ``python -m finbox.demo``.
+"""Runnable demo of the FinBox economy: ``python run_demo.py``.
 
-Runs the one-country food economy for a number of turns, prints a per-turn
-summary, and verifies determinism (two runs -> identical hashes) and journal
-replay. This is the "fully working" vertical slice of impl-plan milestone M2.
+Runs the one-country supply-chain economy (manufacturing -> agriculture, plus
+construction supplying capital) and verifies determinism, conservation and
+journal replay. Vertical slice of impl-plan milestones M2-M4.
 """
 from __future__ import annotations
 
@@ -15,22 +15,23 @@ def main(n_turns: int = 24) -> None:
     cfg = SkeletonConfig()
     store = genesis(cfg)
     engine = SkeletonEngine(store, cfg)
-    cur_total = cfg.n_agents * cfg.agent_start_cash + cfg.firm_start_cash + cfg.gov_start_cash
+    cur_total = store.ledger.total_supply(store.cur)
+    food_pair = f"{store.food}/{store.cur}"
+    agri = min(store.firms)
 
-    print("FinBox walking skeleton: one-country (ALD) food economy")
-    print(f"  agents={cfg.n_agents}  food_ref={cfg.food_ref_price}  wage_ref={cfg.labor_ref_price}  "
-          f"fee={cfg.fee_rate_bps}bps  tax={cfg.consumption_tax_bps}bps")
-    print(f"  genesis CUR total = {cur_total:,} minor (= {cur_total / 1000:,.3f} ALD display)")
+    print("FinBox economy: one-country (ALD) supply chain (M2-M4)")
+    print(f"  agents={cfg.n_agents}  firms={len(store.firms)}  "
+          f"pairs={len(store.pairs)}  food_ref={cfg.food_ref_price}")
+    print(f"  genesis CUR total = {cur_total:,} minor (= {cur_total / 1000:,.3f} ALD)")
     print()
-    print(f"  {'tick':>4} {'price':>6} {'wage':>5} {'gdp':>8} {'a1_cash':>9} {'a1_food':>7} "
-          f"{'a1_sat':>6} {'firm_cash':>10} {'gov_cash':>11}  hash[:12]")
+    print(f"  {'tick':>4} {'food_px':>7} {'gdp':>8} {'agri_cap':>8} "
+          f"{'a1_cash':>9} {'a1_sat':>6} {'gov_cash':>11}  hash[:12]")
     a1 = store.agents[0]
     for _ in range(n_turns):
         engine.run_turn()
         h = state_hash(store)
-        print(f"  {store.tick:>4} {store.last_price[store.pair.pair_id]:>6} "
-              f"{store.macro['wage']:>5} {store.macro['gdp']:>8} {store.cash(a1):>9} "
-              f"{store.food_qty(a1):>7} {store.satiety[a1]:>6} {store.cash(store.firm):>10} "
+        print(f"  {store.tick:>4} {store.last_price[food_pair]:>7} {store.macro['gdp']:>8} "
+              f"{store.firms[agri].capacity:>8} {store.cash(a1):>9} {store.satiety[a1]:>6} "
               f"{store.cash(store.gov):>11}  {h[:12]}")
 
     print()

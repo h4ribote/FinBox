@@ -1,13 +1,14 @@
 """StateStore: the single authoritative world state (doc 02 2.2).
 
-M3 slice: a one-country economy with a food market and a labor market, a single
-regional output cap, and per-agent satiety. All evolving state lives here; it is
-mutated only by the engine (single writer) and serialized for replay hashing.
+M4 slice: a one-country multi-firm supply chain (manufacturing -> agriculture,
+plus construction supplying capital) with capacity, several labor types, and a
+market pair per traded asset. Mutated only by the engine; serialized for replay.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..core.ids import AssetId, EntityId
+from ..domain.production import FirmState
 from ..ledger import Ledger
 from ..market.types import TradingPair
 
@@ -17,13 +18,13 @@ class StateStore:
     ledger: Ledger
     tick: int
     master_seed: int
-    cur: AssetId                       # CUR:ALD
-    food: AssetId                      # COMM:good.food
-    labor: AssetId                     # COMM:labor.unskilled
-    pair: TradingPair                  # food / CUR:ALD
-    labor_pair: TradingPair            # labor / CUR:ALD
+    cur: AssetId                                  # CUR:ALD
+    food: AssetId                                 # the consumer good (COMM:good.food)
+    build: AssetId                                # COMM:build.construction_labor (capital good)
+    pairs: dict[str, TradingPair]                 # pair_id -> pair (all traded assets)
     agents: tuple[EntityId, ...]
-    firm: EntityId
+    agent_labor: dict[EntityId, AssetId]          # each worker's labor asset
+    firms: dict[EntityId, FirmState]
     gov: EntityId
     cb: EntityId
     exch: EntityId
@@ -41,6 +42,9 @@ class StateStore:
     def food_qty(self, e: EntityId) -> int:
         return self.ledger.get(e, self.food)
 
-    def pairs(self) -> list[TradingPair]:
-        """All trading pairs in canonical (pair_id lexicographic) clearing order (doc 03 3.7)."""
-        return sorted([self.pair, self.labor_pair], key=lambda p: p.pair_id)
+    def labor_assets(self) -> set[AssetId]:
+        return set(self.agent_labor.values())
+
+    def sorted_pairs(self) -> list[TradingPair]:
+        """Pairs in canonical (pair_id lexicographic) clearing order (doc 03 3.7)."""
+        return [self.pairs[k] for k in sorted(self.pairs)]
