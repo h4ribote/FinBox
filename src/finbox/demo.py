@@ -19,9 +19,9 @@ def main(n_turns: int = 24) -> None:
     food_pair = f"{store.food}/{store.cur}"
     agri = min(store.firms)
 
-    print("FinBox economy: one-country (ALD) supply chain (M2-M4)")
-    print(f"  agents={cfg.n_agents}  firms={len(store.firms)}  "
-          f"pairs={len(store.pairs)}  food_ref={cfg.food_ref_price}")
+    print("FinBox economy: one-country (ALD) supply chain + finance (M2-M5)")
+    print(f"  agents={cfg.n_agents}  investors={len(store.investors)}  firms={len(store.firms)}  "
+          f"pairs={len(store.pairs)}  bonds={len(store.bonds)}  policy_rate={cfg.cb_policy_rate_bps}bps")
     print(f"  genesis CUR total = {cur_total:,} minor (= {cur_total / 1000:,.3f} ALD)")
     print()
     print(f"  {'tick':>4} {'food_px':>7} {'gdp':>8} {'agri_cap':>8} "
@@ -35,6 +35,10 @@ def main(n_turns: int = 24) -> None:
               f"{store.cash(store.gov):>11}  {h[:12]}")
 
     print()
+    if store.investors:
+        inv = store.investors[0]
+        print(f"  investor NAV: {store.net_worth(inv):,} (cash {store.cash(inv):,}, "
+              f"bonds {sum(store.ledger.get(inv, b.asset) for b in store.bonds)})")
     print(f"  currency conserved: {store.ledger.total_supply(store.cur) == cur_total}")
     print(f"  journal replay matches: {verify_journal_replay(store)}")
     print(f"  deterministic (2 runs identical hashes): {verify_determinism(cfg, n_turns)}")

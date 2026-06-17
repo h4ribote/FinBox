@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..core.ids import AssetId, EntityId
+from ..domain.finance import Bond, Equity
 from ..domain.production import FirmState
 from ..ledger import Ledger
 from ..market.types import TradingPair
@@ -32,6 +33,11 @@ class StateStore:
     last_price: dict[str, int] = field(default_factory=dict)
     satiety: dict[EntityId, int] = field(default_factory=dict)
     macro: dict[str, int] = field(default_factory=dict)
+    # finance (M5)
+    investors: tuple[EntityId, ...] = ()
+    bonds: tuple[Bond, ...] = ()
+    equities: tuple[Equity, ...] = ()
+    cb_policy_rate_bps: int = 0
 
     def qty(self, e: EntityId, a: AssetId) -> int:
         return self.ledger.get(e, a)
@@ -48,3 +54,18 @@ class StateStore:
     def sorted_pairs(self) -> list[TradingPair]:
         """Pairs in canonical (pair_id lexicographic) clearing order (doc 03 3.7)."""
         return [self.pairs[k] for k in sorted(self.pairs)]
+
+    def net_worth(self, e: EntityId) -> int:
+        """NAV (doc 08 8.8): cash + bonds at face + equity at par + goods at last price.
+
+        Single-currency slice: WUI == CUR:ALD, so no FX conversion is needed.
+        """
+        nw = self.cash(e)
+        for b in self.bonds:
+            nw += self.ledger.get(e, b.asset) * b.face
+        for q in self.equities:
+            nw += self.ledger.get(e, q.asset) * q.par
+        for pair in self.pairs.values():
+            if pair.base != self.cur:
+                nw += self.ledger.get(e, pair.base) * self.last_price.get(pair.pair_id, 0)
+        return nw

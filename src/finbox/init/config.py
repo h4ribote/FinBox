@@ -45,3 +45,15 @@ class SkeletonConfig:
     agent_start_cash: int = 50000
     firm_start_cash: int = 300000
     gov_start_cash: int = 100_000_000
+
+    # finance (M5)
+    n_investors: int = 1
+    investor_start_cash: int = 1_000_000
+    bond_face: int = 1000
+    bond_coupon_bps: int = 400          # 4%/yr, quarterly coupon
+    bond_qty: int = 100
+    bond_maturity_tick: int = 47        # ~1 year (year-end)
+    equity_shares_per_firm: int = 100
+    equity_par: int = 1000
+    equity_dividend_bps: int = 200      # 2%/yr, quarterly dividend
+    cb_policy_rate_bps: int = 250       # doc 16 fiscal.policy_rate_bps

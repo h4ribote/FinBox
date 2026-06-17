@@ -14,6 +14,8 @@ from collections import defaultdict
 from ..agents.scripted import ProtoOrder, generate_orders
 from ..core import fixed
 from ..core.enums import Cause, Side, TurnPhase
+from ..core.ids import AssetId, EntityId
+from ..core.time import Calendar
 from ..init.config import SkeletonConfig
 from ..init.genesis import genesis
 from ..ledger import LedgerLine
@@ -26,6 +28,7 @@ class SkeletonEngine:
     def __init__(self, store: StateStore, config: SkeletonConfig) -> None:
         self.s = store
         self.c = config
+        self.cal = Calendar()
 
     def run_turn(self) -> None:
         s, c = self.s, self.c
@@ -78,9 +81,13 @@ class SkeletonEngine:
 
         self._produce_all()       # P5
         self._consume()           # P6
-        self._tax(food_spend)     # P7
+        self._tax(food_spend)     # P7 taxation
+        self._finance()           # P7 coupons / dividends / redemptions
         self._expire_perishables()  # P9
+        if s.investors:
+            s.macro["investor_nav"] = s.net_worth(s.investors[0])
         s.macro["gdp"] = turnover
+        s.macro["policy_rate"] = s.cb_policy_rate_bps
         s.tick += 1
 
     def run(self, n_turns: int) -> list[str]:
@@ -169,6 +176,39 @@ class SkeletonEngine:
                 tlines.append(LedgerLine(s.gov, s.cur, tax))
         if tlines:
             s.ledger.post(s.tick, TurnPhase.P7, Cause.TAX, tlines)
+
+    def _holders(self, asset: AssetId) -> list[EntityId]:
+        bals = self.s.ledger.balances()
+        return sorted((e for e, row in bals.items() if row.get(asset, 0) > 0), key=str)
+
+    def _finance(self) -> None:
+        """P7 protocol transfers: coupons, dividends (quarterly) and redemptions (doc 11)."""
+        s = self.s
+        tick = s.tick
+        if self.cal.is_quarter_end(tick):
+            for b in s.bonds:
+                for e in self._holders(b.asset):
+                    cpn = min(fixed.coupon_quarterly(s.qty(e, b.asset), b.face, b.coupon_bps),
+                              s.cash(b.issuer))
+                    if cpn > 0:
+                        s.ledger.post(tick, TurnPhase.P7, Cause.COUPON,
+                                      [LedgerLine(b.issuer, s.cur, -cpn), LedgerLine(e, s.cur, cpn)])
+            for eq in s.equities:
+                div_ps = (eq.par * eq.dividend_bps) // (10000 * 4)   # floor, quarterly (doc 00 0.20)
+                for e in self._holders(eq.asset):
+                    amt = min(div_ps * s.qty(e, eq.asset), s.cash(eq.firm))
+                    if amt > 0:
+                        s.ledger.post(tick, TurnPhase.P7, Cause.DIVIDEND,
+                                      [LedgerLine(eq.firm, s.cur, -amt), LedgerLine(e, s.cur, amt)])
+        for b in s.bonds:
+            if tick == b.maturity_tick:
+                for e in self._holders(b.asset):
+                    qty = s.qty(e, b.asset)
+                    pay = min(qty * b.face, s.cash(b.issuer))
+                    lines = [LedgerLine(e, b.asset, -qty)]            # burn the matured bond
+                    if pay > 0:
+                        lines += [LedgerLine(b.issuer, s.cur, -pay), LedgerLine(e, s.cur, pay)]
+                    s.ledger.post(tick, TurnPhase.P7, Cause.REDEEM, lines)
 
     def _expire_perishables(self) -> None:
         s = self.s
