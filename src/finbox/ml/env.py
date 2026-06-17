@@ -31,6 +31,7 @@ class WorkerEnv:
         return encode(self.store, self.agent, self.config)
 
     def step(self, action: float):
+        # action arrives in [0,1] from the policy's tanh squashing (doc 07 7.6.1); clamp defensively
         qty = int(round(max(0.0, min(1.0, float(action))) * self.QMAX))
         ext = []
         if qty > 0 and self.store.cash(self.agent) > 0:
@@ -38,6 +39,6 @@ class WorkerEnv:
             ext = [ProtoOrder(self.agent, pair, Side.BUY, OrderType.LIMIT,
                               self.store.last_price[pair.pair_id], qty)]
         self.engine.run_turn(ext)
-        sat = self.store.satiety[self.agent]
+        sat = self.store.satiety[self.agent] / 1000.0   # needs held x1000 (doc 05 5.2)
         reward = sat / 100.0 + 0.01            # needs satisfaction + b_alive (doc 07 7.5.1)
         return encode(self.store, self.agent, self.config), reward, False, {}

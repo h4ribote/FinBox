@@ -15,6 +15,7 @@ class TradingPair:
     kind: MarketKind
     tick_size: int = 1
     lot_size: int = 1
+    active: bool = True       # tradability flag (doc 15 15.7)
 
     @property
     def pair_id(self) -> str:
@@ -33,6 +34,9 @@ class Order:
     qty: int
     submit_seq: int           # deterministic time priority key (doc 09 9.6.3)
     tif: TIF = TIF.GFT
+    expires_tick: int | None = None   # GTT failure tick (doc 09 9.4.2)
+    qty_total: int | None = None      # iceberg: hidden total (doc 09 9.4.4)
+    qty_visible: int | None = None    # iceberg: visible slice = pro-rata basis (doc 09 9.4.4)
 
     def __post_init__(self) -> None:
         if self.qty <= 0:
@@ -41,6 +45,11 @@ class Order:
             raise ValidationError("LIMIT order requires limit_price")
         if self.order_type is OrderType.MARKET and self.limit_price is not None:
             raise ValidationError("MARKET order must not carry a limit_price")
+
+    @property
+    def visible_qty(self) -> int:
+        """Quantity that participates in the auction (iceberg shows only qty_visible)."""
+        return self.qty_visible if self.qty_visible is not None else self.qty
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,8 +1,8 @@
 """Actor-Critic policy network (doc 07 7.7).
 
-A small MLP trunk with a Gaussian action head (1-D, the food-buy fraction) and a
-value head. Actions are clipped to [0,1] by the environment; the Gaussian
-log-prob is used for PPO.
+A small MLP trunk with a diagonal-Gaussian action head (1-D) and a value head. The raw
+Gaussian sample is tanh-squashed and affine-mapped to the [0,1] food-buy fraction in the
+PPO/runtime layer (doc 07 7.6.1), with the change-of-variables Jacobian applied to the log-prob.
 """
 from __future__ import annotations
 import torch

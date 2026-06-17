@@ -160,3 +160,72 @@ class AssetId(str):
     @classmethod
     def bond_corp(cls, firm_n: int, year: int, quarter: int) -> "AssetId":
         return cls(f"BOND:corp.{firm_n:06d}.{year:04d}Q{quarter}")
+
+
+class RegionId(str):
+    """A region id ``REGION:<cc>.<region_index>`` (doc 04 4.1.1).
+
+    ``region_index`` is a plain numeric key (0..15, *not* zero-padded).
+    """
+
+    __slots__ = ()
+    _PAT = re.compile(rf"^REGION:{_CC}\.(?P<idx>\d+)$")
+
+    def __new__(cls, value: str) -> "RegionId":
+        m = cls._PAT.match(value)
+        if m is None or not _valid_cc(m.group("cc")) or not (0 <= int(m.group("idx")) <= 15):
+            raise IdFormatError(f"invalid region_id: {value!r}")
+        return super().__new__(cls, value)
+
+    @property
+    def country(self) -> CountryCode:
+        return CountryCode(self.split(":", 1)[1].split(".", 1)[0])
+
+    @property
+    def index(self) -> int:
+        return int(self.split(".", 1)[1])
+
+    @classmethod
+    def of(cls, cc: CountryCode | str, idx: int) -> "RegionId":
+        return cls(f"REGION:{CountryCode(cc).value}.{idx}")
+
+
+class CellId(str):
+    """A cell id ``CELL:<cc>.<region_index>.<x>.<y>`` (doc 04 4.1.1).
+
+    ``region_index`` (0..15), ``x`` (0..11) and ``y`` (0..7) are plain numeric keys
+    (*not* zero-padded). 12x8 cells per region, 4x4 regions per country.
+    """
+
+    __slots__ = ()
+    _PAT = re.compile(rf"^CELL:{_CC}\.(?P<idx>\d+)\.(?P<x>\d+)\.(?P<y>\d+)$")
+
+    def __new__(cls, value: str) -> "CellId":
+        m = cls._PAT.match(value)
+        if (m is None or not _valid_cc(m.group("cc"))
+                or not (0 <= int(m.group("idx")) <= 15)
+                or not (0 <= int(m.group("x")) <= 11)
+                or not (0 <= int(m.group("y")) <= 7)):
+            raise IdFormatError(f"invalid cell_id: {value!r}")
+        return super().__new__(cls, value)
+
+    @property
+    def country(self) -> CountryCode:
+        return CountryCode(self.split(":", 1)[1].split(".", 1)[0])
+
+    @property
+    def region_index(self) -> int:
+        return int(self.split(".")[1])
+
+    @property
+    def xy(self) -> tuple[int, int]:
+        p = self.split(".")
+        return int(p[2]), int(p[3])
+
+    @property
+    def region(self) -> RegionId:
+        return RegionId.of(self.country, self.region_index)
+
+    @classmethod
+    def of(cls, cc: CountryCode | str, idx: int, x: int, y: int) -> "CellId":
+        return cls(f"CELL:{CountryCode(cc).value}.{idx}.{x}.{y}")

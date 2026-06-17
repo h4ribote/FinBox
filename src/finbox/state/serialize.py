@@ -22,14 +22,45 @@ def canonical_bytes(store: StateStore) -> bytes:
     for pair_id in sorted(store.last_price):
         parts.append(f"px|{pair_id}|{store.last_price[pair_id]}")
 
-    for entity in sorted(store.satiety):
-        parts.append(f"sat|{entity}|{store.satiety[entity]}")
+    # agent need states (doc 05 5.2), all engine-authoritative and part of the snapshot
+    for name, d in (("sat", store.satiety), ("hp", store.health), ("stm", store.stamina),
+                    ("rst", store.rest), ("str", store.stress), ("hap", store.happiness),
+                    ("age", store.age), ("strk", store.starve_streak)):
+        for entity in sorted(d):
+            parts.append(f"{name}|{entity}|{d[entity]}")
+    for entity in sorted(store.skill):
+        for k in sorted(store.skill[entity]):
+            parts.append(f"skill|{entity}|{k}|{store.skill[entity][k]}")
+    for entity in sorted(store.deceased, key=str):
+        parts.append(f"dead|{entity}")
 
     for firm in sorted(store.firms):
-        parts.append(f"cap|{firm}|{store.firms[firm].capacity}")
+        parts.append(f"cap|{firm}|{store.firms[firm].capacity}|{store.firms[firm].state.value}")
 
     for key in sorted(store.macro):
         parts.append(f"macro|{key}|{store.macro[key]}")
+
+    for key in sorted(store.policy):
+        parts.append(f"policy|{key}|{store.policy[key]}")
+
+    # resting GTC/GTT order book (doc 02 2.6.1 full snapshot, doc 09 9.4.2)
+    for o in sorted(store.resting_orders, key=lambda r: r.order_id):
+        parts.append(f"rest|{o.order_id}|{o.pair_id}|{o.side.value}|{o.order_type.value}|"
+                     f"{o.limit_price}|{o.qty}|{o.submit_seq}|{o.tif.value}|{o.expires_tick}")
+
+    # world: digest of mutable cell state (population/owner/forest) + agent residency (doc 04)
+    if store.cells:
+        cell_parts = [
+            f"{cid}|{store.cells[cid].base_population}|{store.cells[cid].owner}|{store.cells[cid].forest_stock}"
+            for cid in sorted(store.cells)
+        ]
+        parts.append("world|" + hashlib.sha256("\n".join(cell_parts).encode("utf-8")).hexdigest())
+        for a in sorted(store.home_cell, key=str):
+            parts.append(f"home|{a}|{store.home_cell[a]}")
+
+    # display names (doc 16 16.14.3): part of the snapshot hash, never affects logic
+    for key in sorted(store.names):
+        parts.append(f"name|{key}|{store.names[key]}")
 
     return "\n".join(parts).encode("utf-8")
 

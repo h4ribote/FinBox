@@ -11,9 +11,23 @@ from .env import WorkerEnv
 from .policy import ActorCritic
 
 
-def train(iters: int = 8, horizon: int = 32, epochs: int = 4, gamma: float = 0.99,
+def _squash_logp(base, raw):
+    """log-prob of the tanh-squashed-then-affine action a = 0.5*(1+tanh(raw)) (doc 07 7.6.1).
+
+    Includes the change-of-variables Jacobian for tanh and the 0.5 affine scale to [0,1].
+    """
+    jac = torch.log(0.5 * (1.0 - torch.tanh(raw) ** 2) + 1e-6)
+    return base.log_prob(raw).sum(-1) - jac.sum(-1)
+
+
+def _to_action(raw):
+    """Map an unbounded raw sample to the [0,1] food-buy fraction via tanh squashing (doc 07 7.6.1)."""
+    return 0.5 * (1.0 + torch.tanh(raw))
+
+
+def train(iters: int = 8, horizon: int = 32, epochs: int = 4, gamma: float = 0.997,
           lam: float = 0.95, clip: float = 0.2, lr: float = 3e-3, seed: int = 0):
-    """Train an ActorCritic; return (policy, mean_reward_per_iteration)."""
+    """Train an ActorCritic; return (policy, mean_reward_per_iteration). gamma default per doc 16.15.5."""
     torch.manual_seed(seed)
     env = WorkerEnv()
     pol = ActorCritic()
@@ -26,14 +40,15 @@ def train(iters: int = 8, horizon: int = 32, epochs: int = 4, gamma: float = 0.9
         for _ in range(horizon):
             ot = torch.as_tensor(obs).unsqueeze(0)
             mu, std, v = pol(ot)
-            dist = torch.distributions.Normal(mu, std)
-            a = dist.sample()
+            base = torch.distributions.Normal(mu, std)
+            raw = base.sample()                            # unbounded; squashed to [0,1] for the env
+            a = _to_action(raw)
             nobs, r, _done, _ = env.step(float(a.squeeze()))
             obs_buf.append(ot.squeeze(0))
-            act_buf.append(a.squeeze(0).detach())
+            act_buf.append(raw.squeeze(0).detach())        # store the pre-squash sample for the update
             rew.append(r)
             val.append(float(v.squeeze().detach()))
-            logp.append(float(dist.log_prob(a).sum().detach()))
+            logp.append(float(_squash_logp(base, raw).squeeze().detach()))
             obs = nobs
         history.append(sum(rew) / len(rew))
 
@@ -58,14 +73,14 @@ def train(iters: int = 8, horizon: int = 32, epochs: int = 4, gamma: float = 0.9
 
         for _ in range(epochs):
             mu, std, v = pol(ot_b)
-            dist = torch.distributions.Normal(mu, std)
-            logp_new = dist.log_prob(at_b).sum(-1)
+            base = torch.distributions.Normal(mu, std)
+            logp_new = _squash_logp(base, at_b)            # at_b are the stored pre-squash samples
             ratio = torch.exp(logp_new - logp_old)
             surr1 = ratio * adv_t
             surr2 = torch.clamp(ratio, 1 - clip, 1 + clip) * adv_t
             policy_loss = -torch.min(surr1, surr2).mean()
             value_loss = ((v.squeeze(-1) - ret_t) ** 2).mean()
-            loss = policy_loss + 0.5 * value_loss - 0.01 * dist.entropy().mean()
+            loss = policy_loss + 0.5 * value_loss - 0.01 * base.entropy().mean()
             opt.zero_grad()
             loss.backward()
             opt.step()

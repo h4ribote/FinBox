@@ -28,6 +28,12 @@ STREAM_WORLDGEN_RESOURCE: Final = "worldgen.resource"
 STREAM_WORLDGEN_POPDENSITY: Final = "worldgen.popdensity"
 STREAM_WORLDGEN_ROLES: Final = "worldgen.roles"
 
+# Deterministic display-name assignment streams (doc 16 16.14.2).
+STREAM_NAMING_COUNTRY: Final = "naming.country"
+STREAM_NAMING_CURRENCY: Final = "naming.currency"
+STREAM_NAMING_FIRM: Final = "naming.firm"
+STREAM_NAMING_PERSON: Final = "naming.person"
+
 _U64_MASK = (1 << 64) - 1
 
 

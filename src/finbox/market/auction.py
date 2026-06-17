@@ -1,58 +1,119 @@
 """Single-price call auction / itayose (doc 09 9.3).
 
-Deterministic clearing: maximize volume, then minimize imbalance, then nearest
-to reference price, then a price-pressure tiebreak. Short side fills fully; the
-long side is allocated by price -> time priority (doc 09 9.6.2).
+Deterministic clearing: maximize volume, then minimize imbalance, then nearest to
+reference price, then a price-pressure tiebreak (9.3.3). The result price is then
+clamped by the circuit-breaker band (9.8.3) and, for labor pairs, floored at
+min_wage (9.3.7). The short side fills fully; the long side is allocated by
+price -> time priority, with pro-rata (largest-remainder) at the single boundary
+level (9.6.2). FOK orders never move p* and are judged after it is fixed (9.4.3).
 """
 from __future__ import annotations
 from collections.abc import Sequence
+from itertools import groupby
 
 from ..core.enums import OrderType, Side
+from ..core.fixed import ceildiv, clamp, largest_remainder
 from .types import ClearResult, Fill, Order
 
 
+def _eq(o: Order) -> int:
+    """Quantity participating in the auction (iceberg shows only qty_visible)."""
+    return o.visible_qty
+
+
 def _demand(buys: Sequence[Order], p: int) -> int:
-    return sum(o.qty for o in buys if o.order_type is OrderType.MARKET or o.limit_price >= p)
+    # limit_price is None => unconditional (MARKET, or market-like IOC/FOK)
+    return sum(_eq(o) for o in buys if o.limit_price is None or o.limit_price >= p)
 
 
 def _supply(sells: Sequence[Order], p: int) -> int:
-    return sum(o.qty for o in sells if o.order_type is OrderType.MARKET or o.limit_price <= p)
+    return sum(_eq(o) for o in sells if o.limit_price is None or o.limit_price <= p)
 
 
-def _allocate_long(long_orders: Sequence[Order], total: int, side: Side) -> dict[str, int]:
-    """Allocate ``total`` over the long side by price -> time priority (doc 09 9.6.2).
+def _price_key(o: Order, side: Side) -> tuple:
+    """Most-aggressive-first key: unconditional (no limit), then better limit (BUY high / SELL low)."""
+    if o.limit_price is None:
+        return (0,)
+    return (1, -o.limit_price) if side is Side.BUY else (1, o.limit_price)
 
-    Most aggressive first: MARKET, then (BUY) higher limit / (SELL) lower limit;
-    same price breaks by submit_seq ascending (time priority).
+
+def _allocate_long(long_orders: Sequence[Order], total: int, side: Side,
+                   cap: dict[str, int] | None = None) -> dict[str, int]:
+    """Allocate ``total`` over the long side by price -> time -> pro-rata (doc 09 9.6.2).
+
+    Complete price levels (by aggressiveness) fill fully; the single boundary level
+    that does not fit is split pro-rata by quantity via largest-remainder, ties by
+    submit_seq ascending. ``cap`` overrides the per-order fillable quantity
+    (used for iceberg visible size and FOK counter-residuals).
     """
-    def rank(o: Order) -> tuple:
-        if o.order_type is OrderType.MARKET:
-            price_key = (0,)            # most aggressive
-        elif side is Side.BUY:
-            price_key = (1, -o.limit_price)   # higher limit first
-        else:
-            price_key = (1, o.limit_price)    # lower limit first
-        return (price_key, o.submit_seq)
+    def fillable(o: Order) -> int:
+        return cap[o.order_id] if cap is not None else _eq(o)
 
     out: dict[str, int] = {}
     remaining = total
-    for o in sorted(long_orders, key=rank):
+    ordered = sorted(long_orders, key=lambda o: (_price_key(o, side), o.submit_seq))
+    for _, grp in groupby(ordered, key=lambda o: _price_key(o, side)):
         if remaining <= 0:
             break
-        f = min(remaining, o.qty)
-        out[o.order_id] = f
-        remaining -= f
+        level = [o for o in grp if fillable(o) > 0]
+        level_total = sum(fillable(o) for o in level)
+        if level_total <= remaining:
+            for o in level:
+                out[o.order_id] = fillable(o)
+            remaining -= level_total
+        else:
+            # boundary level: pro-rata by quantity, remainder ties by submit_seq asc (9.6.2)
+            level.sort(key=lambda o: o.submit_seq)
+            alloc = largest_remainder(remaining, [fillable(o) for o in level])
+            for o, q in zip(level, alloc):
+                if q > 0:
+                    out[o.order_id] = q
+            remaining = 0
+            break
     return out
 
 
-def clear(pair_id: str, orders: Sequence[Order], p_ref: int) -> ClearResult:
-    """Compute the single clearing price and fills for one pair (doc 09 9.3)."""
-    buys = [o for o in orders if o.side is Side.BUY]
-    sells = [o for o in orders if o.side is Side.SELL]
+def _judge_fok(foks: Sequence[Order], p_star: int, buys: Sequence[Order],
+               sells: Sequence[Order], fills: dict[str, int]) -> None:
+    """Fill-or-kill judgment after p* is fixed by the other orders (doc 09 9.4.3).
 
-    candidates = {o.limit_price for o in orders if o.order_type is not OrderType.MARKET}
+    Each FOK (in submit_seq order) fills fully iff the residual counter-side capacity
+    at p* covers its qty; otherwise it is killed. FOK never moves p*.
+    """
+    for o in sorted(foks, key=lambda x: x.submit_seq):
+        price_ok = o.order_type is OrderType.MARKET or (
+            o.limit_price is not None
+            and (o.limit_price >= p_star if o.side is Side.BUY else o.limit_price <= p_star))
+        if not price_ok:
+            continue
+        counter = sells if o.side is Side.BUY else buys
+        elig = [c for c in counter
+                if c.limit_price is None
+                or (o.side is Side.BUY and c.limit_price <= p_star)
+                or (o.side is Side.SELL and c.limit_price >= p_star)]
+        residual = {c.order_id: _eq(c) - fills.get(c.order_id, 0) for c in elig}
+        if sum(max(0, v) for v in residual.values()) < o.qty:
+            continue  # cannot fill in full -> kill
+        fills[o.order_id] = fills.get(o.order_id, 0) + o.qty
+        cap = {oid: v for oid, v in residual.items() if v > 0}
+        for oid, q in _allocate_long([c for c in elig if residual[c.order_id] > 0],
+                                     o.qty, Side.SELL if o.side is Side.BUY else Side.BUY,
+                                     cap=cap).items():
+            fills[oid] = fills.get(oid, 0) + q
+
+
+def clear(pair_id: str, orders: Sequence[Order], p_ref: int,
+          band_bps: int = 0, min_wage: int = 0) -> ClearResult:
+    """Compute the single clearing price and fills for one pair (doc 09 9.3/9.8.3/9.3.7)."""
+    # FOK orders do not participate in price formation (doc 09 9.4.3)
+    price_orders = [o for o in orders if o.order_type is not OrderType.FOK]
+    fok_orders = [o for o in orders if o.order_type is OrderType.FOK]
+    buys = [o for o in price_orders if o.side is Side.BUY]
+    sells = [o for o in price_orders if o.side is Side.SELL]
+
+    candidates = {o.limit_price for o in price_orders
+                  if o.order_type is not OrderType.MARKET and o.limit_price is not None}
     candidates.add(p_ref)
-    # price-pressure direction at the reference price (doc 09 9.3.3 step 4)
     buy_pressure = _demand(buys, p_ref) >= _supply(sells, p_ref)
 
     best_p: int | None = None
@@ -63,31 +124,45 @@ def clear(pair_id: str, orders: Sequence[Order], p_ref: int) -> ClearResult:
         key = (v, -abs(d - s), -abs(p - p_ref), p if buy_pressure else -p)
         if best_key is None or key > best_key:
             best_key, best_p = key, p
-    assert best_p is not None
-    p_star = best_p
+    p_star = best_p if best_p is not None else p_ref
+
+    # circuit breaker (doc 09 9.8.3): clamp p* into the band around p_ref
+    lo_band = p_ref
+    if band_bps > 0:
+        lo_band = (p_ref * (10000 - band_bps)) // 10000
+        hi_band = ceildiv(p_ref * (10000 + band_bps), 10000)
+        p_star = clamp(p_star, lo_band, hi_band)
+    # labor min_wage floor (doc 09 9.3.7), applied after the breaker (floor only strengthens
+    # the lower bound): lower bound = max(min_wage, floor(p_ref*(1-band)))
+    if min_wage > 0 and p_star < min_wage:
+        p_star = min_wage
 
     d_star, s_star = _demand(buys, p_star), _supply(sells, p_star)
     q_star = min(d_star, s_star)
-    if q_star == 0:
-        # no cross: keep last price (p_ref), no fills (doc 09 9.3.5)
-        return ClearResult(pair_id, p_ref, 0, (), d_star - s_star)
 
-    fill_buys = [o for o in buys if o.order_type is OrderType.MARKET or o.limit_price >= p_star]
-    fill_sells = [o for o in sells if o.order_type is OrderType.MARKET or o.limit_price <= p_star]
-    sum_b = sum(o.qty for o in fill_buys)
-    sum_s = sum(o.qty for o in fill_sells)
+    fills_map: dict[str, int] = {}
+    if q_star > 0:
+        fill_buys = [o for o in buys if o.limit_price is None or o.limit_price >= p_star]
+        fill_sells = [o for o in sells if o.limit_price is None or o.limit_price <= p_star]
+        sum_b = sum(_eq(o) for o in fill_buys)
+        sum_s = sum(_eq(o) for o in fill_sells)
+        if sum_b <= sum_s:
+            short, long_, long_side = fill_buys, fill_sells, Side.SELL
+        else:
+            short, long_, long_side = fill_sells, fill_buys, Side.BUY
+        for o in short:                       # short side fully filled
+            fills_map[o.order_id] = _eq(o)
+        fills_map.update(_allocate_long(long_, q_star, long_side))   # long side rationed
 
-    if sum_b <= sum_s:
-        short, long_, short_side, long_side = fill_buys, fill_sells, Side.BUY, Side.SELL
-    else:
-        short, long_, short_side, long_side = fill_sells, fill_buys, Side.SELL, Side.BUY
-
-    qty_by_order: dict[str, int] = {o.order_id: o.qty for o in short}      # short side fully filled
-    qty_by_order.update(_allocate_long(long_, q_star, long_side))           # long side rationed
+    _judge_fok(fok_orders, p_star, buys, sells, fills_map)           # FOK after p* fixed
 
     by_id = {o.order_id: o for o in orders}
     fills = tuple(
         Fill(oid, by_id[oid].entity_id, by_id[oid].side, q)
-        for oid, q in qty_by_order.items() if q > 0
+        for oid, q in fills_map.items() if q > 0
     )
-    return ClearResult(pair_id, p_star, q_star, fills, d_star - s_star)
+    if not fills:
+        # no cross: keep last price (p_ref), no fills (doc 09 9.3.5)
+        return ClearResult(pair_id, p_ref, 0, (), d_star - s_star)
+    matched = sum(q for oid, q in fills_map.items() if by_id[oid].side is Side.BUY)
+    return ClearResult(pair_id, p_star, matched, fills, d_star - s_star)

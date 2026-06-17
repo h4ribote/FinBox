@@ -65,8 +65,9 @@ def test_simple_cross():
     assert sum(f.qty for f in res.fills if f.side is Side.BUY) == 5
 
 
-def test_price_time_priority_on_long_side():
-    # two sellers tie price; buyer takes 5 -> earlier submit_seq filled first
+def test_pro_rata_on_boundary_level():
+    # two sellers tie price at the boundary level; buyer takes 5 of 8 -> pro-rata split
+    # largest_remainder(5, [4, 4]) = [3, 2] (remainder tie -> earlier submit_seq) (doc 09 9.6.2)
     orders = [
         _o(0, Side.BUY, OrderType.LIMIT, 10, 5),
         _o(1, Side.SELL, OrderType.LIMIT, 10, 4),   # earlier
@@ -75,5 +76,28 @@ def test_price_time_priority_on_long_side():
     res = clear(PAIR, orders, p_ref=10)
     assert res.q_star == 5
     fills = {f.order_id: f.qty for f in res.fills}
-    assert fills.get("ORD:0001") == 4   # earlier seller fully filled
-    assert fills.get("ORD:0002") == 1   # later seller gets the remainder
+    assert fills.get("ORD:0001") == 3   # earlier seller gets the extra remainder unit
+    assert fills.get("ORD:0002") == 2
+
+
+def test_price_priority_across_levels():
+    # better-priced sell fills fully before the worse-priced one (price priority, doc 09 9.6.2)
+    orders = [
+        _o(0, Side.BUY, OrderType.LIMIT, 12, 5),
+        _o(1, Side.SELL, OrderType.LIMIT, 8, 4),    # better (lower) ask -> filled first
+        _o(2, Side.SELL, OrderType.LIMIT, 11, 4),   # worse ask -> boundary remainder
+    ]
+    res = clear(PAIR, orders, p_ref=10)
+    assert res.q_star == 5
+    fills = {f.order_id: f.qty for f in res.fills}
+    assert fills.get("ORD:0001") == 4   # best-priced seller fully filled
+    assert fills.get("ORD:0002") == 1   # worse-priced seller gets only the remainder
+
+
+def test_fok_fills_or_kills():
+    # FOK BUY 5 with only 4 sell available -> killed; FOK BUY 3 -> fills fully
+    sells = [_o(1, Side.SELL, OrderType.LIMIT, 10, 4)]
+    killed = clear(PAIR, [_o(0, Side.BUY, OrderType.FOK, 10, 5)] + sells, p_ref=10)
+    assert killed.q_star == 0    # 5 cannot be fully filled from 4 -> kill
+    ok = clear(PAIR, [_o(0, Side.BUY, OrderType.FOK, 10, 3)] + sells, p_ref=10)
+    assert ok.q_star == 3        # 3 fully fillable -> fills

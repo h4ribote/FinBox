@@ -10,12 +10,18 @@ Fully deterministic (no RNG used in this slice).
 """
 from __future__ import annotations
 from collections import defaultdict
+from dataclasses import replace
 
 from ..agents.scripted import ProtoOrder, generate_orders
 from ..core import fixed
-from ..core.enums import Cause, Side, TurnPhase
+from ..core.enums import (
+    Cause, FirmLifecycle, MarketKind, OrderType, Side, TIF, TurnPhase, is_perishable)
 from ..core.ids import AssetId, EntityId
+from ..core.rng import STREAM_DEMOGRAPHY, rng as derive_rng
 from ..core.time import Calendar
+from ..domain import needs
+
+MIGRATE_PCT = 5    # per-turn migration probability when a strictly better cell exists (doc 04 4.6.1)
 from ..init.config import SkeletonConfig
 from ..init.genesis import genesis
 from ..ledger import LedgerLine
@@ -30,48 +36,75 @@ class SkeletonEngine:
         self.s = store
         self.c = config
         self.cal = Calendar()
+        self._next_player = 0          # per-room PLAYER numbering from 0 (doc 13 13.3.2)
+
+    def onboard_player(self, endowment: int) -> EntityId:
+        """Engine-owned onboarding: assign a PLAYER id and post the genesis endowment (doc 13 13.3.1).
+
+        The engine is the single writer of the ledger (doc 02 2.1); the gateway delegates here
+        rather than posting to the ledger itself.
+        """
+        ent = EntityId.player(self._next_player)
+        self._next_player += 1
+        self.s.ledger.post(self.s.tick, TurnPhase.INIT, Cause.GENESIS,
+                           [LedgerLine(ent, self.s.cur, endowment)])
+        return ent
 
     def run_turn(self, external_protos=None) -> None:
         s, c = self.s, self.c
         tick = s.tick
 
-        # P1: workers produce (mint) their perishable labor
-        if c.q_labor_per_worker > 0:
-            s.ledger.post(tick, TurnPhase.P1, Cause.PRODUCTION,
-                          [LedgerLine(a, s.agent_labor[a], c.q_labor_per_worker) for a in s.agents])
+        # P1: workers produce (mint) their perishable labor via the skill/stamina model (doc 05 5.3)
+        labor_supplied = needs.mint_labor(s, c)
 
-        # P1/P2: collect scripted intent plus any externally submitted (player/agent) orders,
-        # assign deterministic submit_seq, validate+clamp with per-entity cash/inventory
-        # reservation so multiple orders cannot double-spend (doc 09 9.5)
+        # P1/P2: assemble orders from carried resting GTC/GTT, scripted intent, and external
+        # (player/agent) submissions; assign deterministic submit_seq; validate+clamp with
+        # per-entity cash/inventory reservation so orders cannot double-spend (doc 09 9.4.2/9.5)
         protos = generate_orders(s, c)
         if external_protos:
             protos = protos + list(external_protos)
         protos.sort(key=lambda p: (str(p.entity), p.pair.pair_id, p.side.value))
+
+        # Action Log: append this tick's collected pre-validation intents, tagged with entity_id
+        # (doc 02 2.6.1); the basis for action-log replay verification (doc 02 2.6.2)
+        s.action_log.append({"tick": tick, "intents": [
+            {"entity": str(p.entity), "kind": "ORDER", "pair": p.pair.pair_id,
+             "side": p.side.value, "qty": p.qty} for p in protos]})
+
         orders_by_pair: dict[str, list[Order]] = defaultdict(list)
         reserved_cash: dict = defaultdict(int)
         reserved_sell: dict = defaultdict(int)
+        live_orders: list[Order] = []
+
+        # (a) carried resting orders first: older => higher time priority (doc 09 9.6.3)
+        for ro in s.resting_orders:
+            pair = s.pairs.get(ro.pair_id)
+            if pair is None:
+                continue
+            q = self._reserve(ro.entity_id, pair, ro.side, ro.limit_price, ro.qty,
+                              reserved_cash, reserved_sell)
+            if q <= 0:
+                continue   # P2 invalidation: balance gone -> drop from book (doc 09 9.4.2)
+            vis = min(ro.qty_visible, q) if ro.qty_visible is not None else None
+            o = replace(ro, qty=q, qty_visible=vis)
+            orders_by_pair[pair.pair_id].append(o)
+            live_orders.append(o)
+
+        # (b) fresh orders this turn (submit_seq = tick-scoped key so carried < fresh)
         seq = 0
         for p in protos:
-            if p.side is Side.BUY:
-                price = p.limit_price or 0
-                if price <= 0:
-                    continue
-                avail = s.ledger.get(p.entity, p.pair.quote) - reserved_cash[p.entity]
-                q = min(p.qty, avail // price)
-                while q > 0 and price * q + fixed.fee(price * q, c.fee_rate_bps) > avail:
-                    q -= 1
-                if q <= 0:
-                    continue
-                reserved_cash[p.entity] += price * q + fixed.fee(price * q, c.fee_rate_bps)
-            else:
-                key = (p.entity, p.pair.base)
-                q = min(p.qty, s.ledger.get(p.entity, p.pair.base) - reserved_sell[key])
-                if q <= 0:
-                    continue
-                reserved_sell[key] += q
-            orders_by_pair[p.pair.pair_id].append(Order(
-                order_id=f"ORD:{tick}:{seq:04d}", entity_id=p.entity, pair_id=p.pair.pair_id,
-                side=p.side, order_type=p.order_type, limit_price=p.limit_price, qty=q, submit_seq=seq))
+            pair = p.pair
+            q = self._reserve(p.entity, pair, p.side, p.limit_price, p.qty,
+                              reserved_cash, reserved_sell)
+            if q <= 0:
+                continue
+            vis = min(p.qty_visible, q) if (c.iceberg_enabled and p.qty_visible is not None) else None
+            o = Order(order_id=f"ORD:{tick}:{seq:04d}", entity_id=p.entity, pair_id=pair.pair_id,
+                      side=p.side, order_type=p.order_type, limit_price=p.limit_price, qty=q,
+                      submit_seq=tick * 1_000_000 + seq, tif=p.tif, expires_tick=p.expires_tick,
+                      qty_visible=vis)
+            orders_by_pair[pair.pair_id].append(o)
+            live_orders.append(o)
             seq += 1
 
         self._govern()            # P3 GOVERN: aggregate politician proposals into policy
@@ -79,32 +112,41 @@ class SkeletonEngine:
         # P4 CLEAR all pairs
         turnover = 0
         food_spend: dict = {}
+        filled: dict[str, int] = {}
         for pair in s.sorted_pairs():
-            t, spend = self._clear_and_settle(pair, orders_by_pair.get(pair.pair_id, []))
+            t, spend, fills = self._clear_and_settle(pair, orders_by_pair.get(pair.pair_id, []))
             turnover += t
+            for oid, fq in fills:
+                filled[oid] = filled.get(oid, 0) + fq
             if pair.base == s.food:
                 food_spend = spend
+        self._roll_resting_book(live_orders, filled)   # GTC/GTT carry, GFT/IOC/FOK drop (doc 09 9.6.5)
 
         self._produce_all()       # P5
-        self._consume()           # P6
+        needs.consume(s, c)       # P6 CONSUME: needs update, multi-food, skill growth, death (doc 05)
+        self._migrate()           # P6 CONSUME: residency / migration (doc 04 4.6.1)
+        # P7 protocol-transfer order (doc 03 3.7): taxation -> coupon/redemption -> dividend -> subsidy
         self._tax(food_spend)     # P7 taxation (policy-driven rate)
-        self._welfare()           # P7 welfare transfers to low-cash agents
-        self._finance()           # P7 coupons / dividends / redemptions
+        self._finance()           # P7 coupons -> redemptions -> dividends
+        self._welfare()           # P7 subsidy / welfare transfers to low-cash agents
+        self._liquidate_insolvent()  # P7 insolvency -> liquidation (doc 10.8.5)
         expired = self._expire_perishables()  # P9
-        self._finalize_macro(turnover, expired)
+        self._finalize_macro(turnover, expired, labor_supplied)
         s.tick += 1
 
-    def _finalize_macro(self, turnover: int, expired_labor: int) -> None:
+    def _finalize_macro(self, turnover: int, expired_labor: int, labor_supplied: int) -> None:
         """P9: confirm macro indicators / KPIs (doc 00 0.16)."""
         s, c = self.s, self.c
         s.macro["gdp"] = turnover
         s.macro["policy_rate"] = s.cb_policy_rate_bps
         if s.investors:
             s.macro["investor_nav"] = s.net_worth(s.investors[0])
-        n = len(s.agents)
-        s.macro["avg_satiety"] = sum(s.satiety.values()) // n if n else 0
-        supplied = n * c.q_labor_per_worker
-        s.macro["unemployment_bps"] = (expired_labor * 10000) // supplied if supplied else 0
+        alive = [a for a in s.agents if a not in s.deceased]
+        n = len(alive)
+        # avg_satiety as a 0..100 KPI (needs are held x1000 internally, doc 05 5.2)
+        s.macro["avg_satiety"] = sum(s.satiety[a] for a in alive) // (n * needs.SCALE) if n else 0
+        s.macro["population"] = n
+        s.macro["unemployment_bps"] = (expired_labor * 10000) // labor_supplied if labor_supplied else 0
         food_pid = f"{s.food}/{s.cur}"
         s.macro["cpi"] = s.last_price[food_pid] * 10000 // c.food_ref_price  # genesis = 10000
 
@@ -115,19 +157,86 @@ class SkeletonEngine:
         self.run_turn()
         return state_hash(self.s)
 
+    # ---- market helpers ----
+    def _fee_bps(self, pair: TradingPair) -> int:
+        """FX pairs (both legs CUR) use the lower fx fee, others the standard fee (doc 09 9.6.1)."""
+        return self.c.fx_fee_rate_bps if pair.kind is MarketKind.FX else self.c.fee_rate_bps
+
+    def _band_bps(self, pair: TradingPair) -> int:
+        """Circuit-breaker band by market kind (doc 09 9.8.3)."""
+        c = self.c
+        return {
+            MarketKind.FX: c.price_band_fx_bps,
+            MarketKind.EQUITY: c.price_band_equity_bps,
+            MarketKind.BOND: c.price_band_bond_bps,
+        }.get(pair.kind, c.price_band_commodity_bps)   # GOODS / LABOR -> commodity band
+
+    def _reserve(self, entity: EntityId, pair: TradingPair, side: Side,
+                 limit_price: int | None, requested: int, rcash: dict, rsell: dict) -> int:
+        """Validate+clamp one order against current balances (doc 09 9.5); return fillable qty."""
+        s = self.s
+        rate = self._fee_bps(pair)
+        if side is Side.BUY:
+            if limit_price is None:
+                # market buy: reserve worst-case cash at the circuit-breaker ceiling (doc 09 9.5)
+                band = self._band_bps(pair)
+                pref = s.last_price[pair.pair_id]
+                rprice = fixed.ceildiv(pref * (10000 + band), 10000) if band > 0 else pref
+                rprice = max(1, rprice)
+            else:
+                if limit_price <= 0:
+                    return 0
+                rprice = limit_price
+            avail = s.ledger.get(entity, pair.quote) - rcash[entity]
+            q = min(requested, avail // rprice) if rprice > 0 else 0
+            while q > 0 and rprice * q + fixed.fee(rprice * q, rate) > avail:
+                q -= 1
+            if q <= 0:
+                return 0
+            rcash[entity] += rprice * q + fixed.fee(rprice * q, rate)
+            return q
+        key = (entity, pair.base)
+        q = min(requested, s.ledger.get(entity, pair.base) - rsell[key])
+        if q <= 0:
+            return 0
+        rsell[key] += q
+        return q
+
+    def _roll_resting_book(self, live_orders: list[Order], filled: dict[str, int]) -> None:
+        """Rebuild the GTC/GTT resting book after P4: carry unfilled remainders, drop the rest.
+
+        GFT and IOC/FOK never rest; GTT expires once tick >= expires_tick (P9) (doc 09 9.4/9.6.5).
+        """
+        tick = self.s.tick
+        new_resting: list[Order] = []
+        for o in live_orders:
+            if o.tif is TIF.GFT or o.order_type in (OrderType.IOC, OrderType.FOK):
+                continue
+            if o.tif is TIF.GTT and o.expires_tick is not None and tick >= o.expires_tick:
+                continue
+            remainder = o.qty - filled.get(o.order_id, 0)
+            if remainder > 0:
+                vis = min(o.qty_visible, remainder) if o.qty_visible is not None else None
+                new_resting.append(replace(o, qty=remainder, qty_visible=vis))
+        self.s.resting_orders = new_resting
+
     # ---- phases ----
-    def _clear_and_settle(self, pair: TradingPair, orders: list[Order]) -> tuple[int, dict]:
-        s, c = self.s, self.c
-        res = clear(pair.pair_id, orders, s.last_price[pair.pair_id])
+    def _clear_and_settle(self, pair: TradingPair, orders: list[Order]) -> tuple[int, dict, list]:
+        s = self.s
+        band = self._band_bps(pair)
+        mw = s.policy.get("min_wage", 0) if pair.kind is MarketKind.LABOR else 0
+        res = clear(pair.pair_id, orders, s.last_price[pair.pair_id], band_bps=band, min_wage=mw)
         if res.q_star == 0:
-            return 0, {}
+            return 0, {}, []
         p = res.p_star
+        rate = self._fee_bps(pair)
         lines: list[LedgerLine] = []
         total_fee = 0
         spend: dict = {}
+        fills_out: list = []
         for f in res.fills:
             cash_amt = p * f.qty
-            fee_amt = fixed.fee(cash_amt, c.fee_rate_bps)
+            fee_amt = fixed.fee(cash_amt, rate)
             total_fee += fee_amt
             if f.side is Side.BUY:
                 lines.append(LedgerLine(f.entity_id, pair.base, f.qty))
@@ -136,53 +245,73 @@ class SkeletonEngine:
             else:
                 lines.append(LedgerLine(f.entity_id, pair.base, -f.qty))
                 lines.append(LedgerLine(f.entity_id, pair.quote, cash_amt - fee_amt))
+            fills_out.append((f.order_id, f.qty))
         if total_fee > 0:
             lines.append(LedgerLine(s.exch, pair.quote, total_fee))
         s.ledger.post(s.tick, TurnPhase.P4, Cause.TRADE, lines)
         s.last_price[pair.pair_id] = p
-        return p * res.q_star, spend
+        return p * res.q_star, spend, fills_out
 
     def _produce_all(self) -> None:
+        """P5 PRODUCE: Leontief production, then capacity expansion, then depreciation (doc 10.8.2)."""
         s, c = self.s, self.c
+        scale = c.recipe_yield_scale
+
+        # (1) region-cap-free desired runs per firm (capacity / labor / inputs) (doc 10.3)
+        desired: dict = {}
         for fid in sorted(s.firms):
             fs = s.firms[fid]
             r = fs.recipe
-            # (1) capacity expansion: consume construction labor bought this turn
-            if fs.expands and fs.capacity < c.capacity_max:
-                bh = s.qty(fid, s.build)
+            if fs.state is FirmLifecycle.LIQUIDATING:
+                desired[fid] = 0
+                continue
+            runs = fs.capacity // r.capacity_cost
+            for inp, q in r.inputs.items():
+                runs = min(runs, s.qty(fid, inp) // q)
+            desired[fid] = max(0, runs)
+
+        # (2) proportional region-cap allocation per (capped asset, region) (doc 10.6)
+        region_runs = dict(desired)
+        groups: dict = defaultdict(list)
+        for fid in sorted(s.firms):
+            r = s.firms[fid].recipe
+            if r.region_capped_output is not None:
+                groups[(r.region_capped_output, s.firms[fid].region_id)].append(fid)
+        for (asset, region), fids in groups.items():
+            cap = s.region_cap_for(asset, region)
+            opr = {fid: s.firms[fid].recipe.outputs[asset] * scale for fid in fids}   # output units / run
+            demand = {fid: desired[fid] * opr[fid] for fid in fids}                   # output units
+            total = sum(demand.values())
+            if total <= cap:
+                share = demand
+            else:
+                share = {fid: (cap * demand[fid]) // total for fid in fids}
+                order = sorted(fids, key=lambda f: (-demand[f], str(f)))
+                for i in range(cap - sum(share.values())):     # remainder 1-by-1 (doc 10.6)
+                    share[order[i]] += 1
+            for fid in fids:
+                region_runs[fid] = min(desired[fid], share[fid] // opr[fid] if opr[fid] else 0)
+
+        # (3) produce, then expand, then depreciate (doc 10.8.2 order)
+        for fid in sorted(s.firms):
+            fs = s.firms[fid]
+            r = fs.recipe
+            runs = region_runs[fid]
+            if runs > 0:
+                lines = [LedgerLine(fid, inp, -runs * q) for inp, q in r.inputs.items()]
+                lines += [LedgerLine(fid, outp, runs * q * scale) for outp, q in r.outputs.items()]
+                s.ledger.post(s.tick, TurnPhase.P5, Cause.PRODUCTION, lines)
+            cap_max = c.capacity_max_for(fs.industry)
+            if fs.expands and fs.capacity < cap_max:               # capacity expansion (doc 10.7)
+                # consume up to the planned expansion amount; the rest (e.g. a builder's own
+                # output) stays as sellable inventory rather than being cannibalized
+                bh = min(s.qty(fid, s.build), c.firm_expand_buy)
                 if bh > 0:
                     dcap = (c.expand_g * bh) // (1 + fs.capacity // c.expand_k)
                     s.ledger.post(s.tick, TurnPhase.P5, Cause.PRODUCTION, [LedgerLine(fid, s.build, -bh)])
-                    fs.capacity = min(c.capacity_max, fs.capacity + dcap)
-            # (2) production: runs bounded by capacity, inputs, region cap (Leontief)
-            runs = fs.capacity
-            for inp, q in r.inputs.items():
-                runs = min(runs, s.qty(fid, inp) // q)
-            if r.region_capped_output is not None:
-                outq = r.outputs[r.region_capped_output]
-                runs = min(runs, s.region_cap.get(r.region_capped_output, 0) // outq)
-            if runs > 0:
-                lines = [LedgerLine(fid, inp, -runs * q) for inp, q in r.inputs.items()]
-                lines += [LedgerLine(fid, outp, runs * q) for outp, q in r.outputs.items()]
-                s.ledger.post(s.tick, TurnPhase.P5, Cause.PRODUCTION, lines)
-            # (3) depreciation
-            fs.capacity = max(c.capacity_min, (fs.capacity * (10000 - c.depreciation_bps)) // 10000)
-
-    def _consume(self) -> None:
-        s, c = self.s, self.c
-        lines: list[LedgerLine] = []
-        for a in s.agents:
-            have = s.food_qty(a)
-            sat = s.satiety[a]
-            deficit = 100 - sat
-            need = (deficit + c.satiety_per_food - 1) // c.satiety_per_food if deficit > 0 else 0
-            eat = min(have, need)
-            if eat > 0:
-                lines.append(LedgerLine(a, s.food, -eat))
-                sat = fixed.clamp(sat + eat * c.satiety_per_food, 0, 100)
-            s.satiety[a] = fixed.clamp(sat - c.satiety_decay, 0, 100)
-        if lines:
-            s.ledger.post(s.tick, TurnPhase.P6, Cause.CONSUMPTION, lines)
+                    fs.capacity = min(cap_max, fs.capacity + dcap)
+            # depreciation: pure exponential decay, no floor (doc 10.7 "放置した設備は朽ちる")
+            fs.capacity = (fs.capacity * (10000 - c.depreciation_bps)) // 10000
 
     def _govern(self) -> None:
         """P3 GOVERN: aggregate per-politician proposals into confirmed policy (doc 12 12.2).
@@ -200,6 +329,26 @@ class SkeletonEngine:
         wel_vals = [2000 + 500 * i for i in range(n)]
         s.policy["tax_bps"] = aggregate_scalar(tax_vals, w, c.tax_lo, c.tax_hi, c.tax_tick)
         s.policy["welfare_bps"] = aggregate_scalar(wel_vals, w, c.welfare_lo, c.welfare_hi, c.welfare_tick)
+        self._apply_submitted_votes()
+
+    def _apply_submitted_votes(self) -> None:
+        """Aggregate submitted PolicyVotes (doc 14 14.5.6) into confirmed policy levers (doc 12 12.2)."""
+        s, c = self.s, self.c
+        cc = s.gov.country.value if s.gov.country else None
+        levers = s.pending_votes.pop(cc, {}) if cc else {}
+        # SCALAR levers: weighted mean -> clamp -> round to tick (doc 12 12.2.1)
+        if levers.get("tax_consumption"):
+            vals = levers["tax_consumption"]
+            s.policy["tax_bps"] = aggregate_scalar(vals, [1] * len(vals), c.tax_lo, c.tax_hi, c.tax_tick)
+        if levers.get("welfare_level"):
+            vals = levers["welfare_level"]
+            s.policy["welfare_bps"] = aggregate_scalar(vals, [1] * len(vals), c.welfare_lo, c.welfare_hi, c.welfare_tick)
+        if levers.get("min_wage"):
+            vals = levers["min_wage"]
+            s.policy["min_wage"] = aggregate_scalar(vals, [1] * len(vals), 0, 1_000_000, 1)
+        if levers.get("policy_rate"):
+            vals = levers["policy_rate"]
+            s.cb_policy_rate_bps = aggregate_scalar(vals, [1] * len(vals), 0, 5000, 25)
 
     def _tax(self, spend: dict) -> None:
         s = self.s
@@ -233,43 +382,121 @@ class SkeletonEngine:
         return sorted((e for e, row in bals.items() if row.get(asset, 0) > 0), key=str)
 
     def _finance(self) -> None:
-        """P7 protocol transfers: coupons, dividends (quarterly) and redemptions (doc 11)."""
+        """P7 protocol transfers at quarter boundaries: coupon -> redemption -> dividend (doc 03 3.7, doc 11)."""
         s = self.s
         tick = s.tick
-        if self.cal.is_quarter_end(tick):
-            for b in s.bonds:
-                for e in self._holders(b.asset):
-                    cpn = min(fixed.coupon_quarterly(s.qty(e, b.asset), b.face, b.coupon_bps),
-                              s.cash(b.issuer))
-                    if cpn > 0:
-                        s.ledger.post(tick, TurnPhase.P7, Cause.COUPON,
-                                      [LedgerLine(b.issuer, s.cur, -cpn), LedgerLine(e, s.cur, cpn)])
-            for eq in s.equities:
-                div_ps = (eq.par * eq.dividend_bps) // (10000 * 4)   # floor, quarterly (doc 00 0.20)
-                for e in self._holders(eq.asset):
-                    amt = min(div_ps * s.qty(e, eq.asset), s.cash(eq.firm))
-                    if amt > 0:
-                        s.ledger.post(tick, TurnPhase.P7, Cause.DIVIDEND,
-                                      [LedgerLine(eq.firm, s.cur, -amt), LedgerLine(e, s.cur, amt)])
+        if not self.cal.is_quarter_end(tick):
+            return
+        # (1) coupons (doc 11.4.3)
+        for b in s.bonds:
+            for e in self._holders(b.asset_id):
+                cpn = min(fixed.coupon_quarterly(s.qty(e, b.asset_id), b.face, b.coupon_bps),
+                          s.cash(b.issuer))
+                if cpn > 0:
+                    s.ledger.post(tick, TurnPhase.P7, Cause.COUPON,
+                                  [LedgerLine(b.issuer, s.cur, -cpn), LedgerLine(e, s.cur, cpn)])
+        # (2) principal redemption of matured bonds (quarter-end gated, doc 03 table 3.5)
         for b in s.bonds:
             if tick == b.maturity_tick:
-                for e in self._holders(b.asset):
-                    qty = s.qty(e, b.asset)
+                for e in self._holders(b.asset_id):
+                    qty = s.qty(e, b.asset_id)
                     pay = min(qty * b.face, s.cash(b.issuer))
-                    lines = [LedgerLine(e, b.asset, -qty)]            # burn the matured bond
+                    lines = [LedgerLine(e, b.asset_id, -qty)]            # burn the matured bond
                     if pay > 0:
                         lines += [LedgerLine(b.issuer, s.cur, -pay), LedgerLine(e, s.cur, pay)]
                     s.ledger.post(tick, TurnPhase.P7, Cause.REDEEM, lines)
+        # (3) dividends (doc 11.6.2): profit distribution, not a fixed par-rate
+        # dividend_per_share = floor(distributable_profit * payout_ratio / shares_outstanding)
+        for eq in s.equities:
+            shares = eq.shares_outstanding
+            if shares <= 0:
+                continue
+            distributable = fixed.apply_bps_floor(s.distributable_profit(eq.firm_id), eq.dividend_policy_bps)
+            div_ps = distributable // shares          # floor; truncated remainder retained by firm
+            if div_ps <= 0:
+                continue
+            for e in self._holders(eq.asset_id):
+                amt = min(div_ps * s.qty(e, eq.asset_id), s.cash(eq.firm_id))
+                if amt > 0:
+                    s.ledger.post(tick, TurnPhase.P7, Cause.DIVIDEND,
+                                  [LedgerLine(eq.firm_id, s.cur, -amt), LedgerLine(e, s.cur, amt)])
+
+    def _liquidate_insolvent(self) -> None:
+        """P7: a firm that can neither produce (capacity 0) nor pay (cash 0) is liquidated (doc 10.8.5)."""
+        s = self.s
+        for fid in sorted(s.firms):
+            fs = s.firms[fid]
+            if fs.state is FirmLifecycle.LIQUIDATING:
+                continue
+            if fs.capacity <= 0 and s.cash(fid) <= 0:
+                self._liquidate(fid)
+
+    def _liquidate(self, fid: EntityId) -> None:
+        """Distribute residual firm cash to shareholders pro-rata, then burn all EQ (doc 10.8.5)."""
+        s = self.s
+        residual = s.cash(fid)
+        for eq in s.equities:
+            if eq.firm_id != fid:
+                continue
+            holders = [(e, s.qty(e, eq.asset_id)) for e in self._holders(eq.asset_id)]
+            total = sum(q for _, q in holders)
+            lines: list[LedgerLine] = []
+            if total > 0 and residual > 0:                       # residual distribution (largest-remainder)
+                alloc = fixed.largest_remainder(residual, [q for _, q in holders])
+                for (e, _), a in zip(holders, alloc):
+                    if a > 0:
+                        lines.append(LedgerLine(fid, s.cur, -a))
+                        lines.append(LedgerLine(e, s.cur, a))
+                residual = 0
+            for e, q in holders:                                 # burn the equity (doc 00 0.5.1)
+                if q > 0:
+                    lines.append(LedgerLine(e, eq.asset_id, -q))
+            if lines:
+                s.ledger.post(s.tick, TurnPhase.P7, Cause.LIQUIDATION, lines)
+        s.firms[fid].state = FirmLifecycle.LIQUIDATING
+
+    def _migrate(self) -> None:
+        """P6: agents may relocate within their home region toward a less-crowded cell (doc 04 4.6.1).
+
+        Utility favours capacity headroom and low pollution; the move conserves total population
+        (source -1 / dest +1) and keeps agents in the active region (where the labor market is).
+        """
+        s = self.s
+        if not s.cells:
+            return
+        by_region: dict = defaultdict(list)
+        for c in s.cells.values():
+            if not c.terrain_locked:
+                by_region[str(c.region_id)].append(c)
+        for a in s.agents:
+            if a in s.deceased or a not in s.home_cell:
+                continue
+            cur = s.cells.get(s.home_cell[a])
+            if cur is None:
+                continue
+            region_cells = by_region.get(str(cur.region_id), [])
+            if len(region_cells) < 2:
+                continue
+            g = derive_rng(s.master_seed, s.tick, STREAM_DEMOGRAPHY, str(a), "migrate")
+            cand = region_cells[int(g.integers(0, len(region_cells)))]
+            if cand.cell_id == cur.cell_id:
+                continue
+            # U(dest) - U(home): capacity headroom minus pollution (doc 04 4.6.1, slice signals)
+            u_cur = (cur.population_capacity - cur.base_population) - cur.pollution
+            u_cand = (cand.population_capacity - cand.base_population) - cand.pollution
+            if u_cand > u_cur and int(g.integers(0, 100)) < MIGRATE_PCT:
+                cur.base_population = max(0, cur.base_population - 1)
+                cand.base_population += 1
+                s.home_cell[a] = cand.cell_id
 
     def _expire_perishables(self) -> int:
-        """Burn unused perishable labor at P9; return the total expired (doc 08 8.9.4)."""
+        """Burn unused perishables (labor.*, svc.*, energy.electricity) at P9 (doc 08 8.9.4)."""
         s = self.s
-        labor_assets = s.labor_assets()
         lines: list[LedgerLine] = []
         expired = 0
         for e, row in s.ledger.balances().items():
             for a, q in row.items():
-                if a in labor_assets and q > 0:
+                if q > 0 and is_perishable(a):
                     lines.append(LedgerLine(e, a, -q))
                     expired += q
         if lines:

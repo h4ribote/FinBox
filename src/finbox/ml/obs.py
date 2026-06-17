@@ -11,7 +11,7 @@ OBS_DIM = 5
 
 def encode(store, agent, config) -> np.ndarray:
     food_pid = f"{store.food}/{store.cur}"
-    sat = store.satiety.get(agent, 0) / 100.0
+    sat = store.satiety.get(agent, 0) / 100000.0   # needs held x1000 (doc 05 5.2)
     cash = store.cash(agent)
     food = store.food_qty(agent)
     hungry = 1.0 if sat < config.satiety_buy_threshold / 100.0 else 0.0

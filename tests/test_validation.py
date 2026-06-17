@@ -20,7 +20,7 @@ def test_ten_year_run_is_stable():
         e.run_turn()
         assert s.ledger.total_supply(s.cur) == cur_total                 # money conserved
         assert all(q >= 0 for row in s.ledger.balances().values() for q in row.values())
-        assert all(0 <= s.satiety[a] <= 100 for a in s.agents)           # needs bounded
+        assert all(0 <= s.satiety[a] <= 100000 for a in s.agents)        # needs bounded (x1000)
         assert 0 <= s.macro["unemployment_bps"] <= 10000
         assert sum(s.ledger.total_supply(a) for a in s.labor_assets()) == 0  # labor perished
         if s.macro["gdp"] > 0:
@@ -47,3 +47,11 @@ def test_long_run_is_deterministic():
         e = SkeletonEngine(s, c)
         return [e._step_hash() for _ in range(120)]
     assert run() == run()
+
+
+def test_action_log_replay_reconstructs():
+    from finbox.engine import record_run, verify_replay
+    c = SkeletonConfig()
+    action_log, hashes = record_run(c, 60)          # doc 02 2.6.1: per-tick intents captured
+    assert len(action_log) == 60
+    assert verify_replay(c, action_log, hashes)     # doc 02 2.6.2: re-sim matches per-tick hashes

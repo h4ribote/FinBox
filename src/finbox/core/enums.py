@@ -31,8 +31,26 @@ class CommNamespace(str, Enum):
     MIL = "mil"
 
 
-# Perishable namespaces (doc 00 0.5.3): labor.*, svc.*, energy.electricity.
+# Perishable namespaces (doc 00 0.5.3): labor.*, svc.*. energy.electricity is a
+# single perishable asset inside the otherwise-storable energy namespace (so it
+# cannot be expressed as a whole namespace).
 PERISHABLE_NAMESPACES = frozenset({CommNamespace.LABOR, CommNamespace.SVC})
+PERISHABLE_ASSET_IDS = frozenset({"COMM:energy.electricity"})
+
+
+def is_perishable(asset_id: str) -> bool:
+    """True iff the asset is force-burned when unused at P9 (doc 00 0.5.3, doc 08 8.9.4).
+
+    Perishable = the ``labor.*`` and ``svc.*`` namespaces, plus the single asset
+    ``COMM:energy.electricity`` (``energy.fuel`` and the other ``energy.*`` assets are
+    storable). Works on a bare id string (AssetId is a ``str`` subclass).
+    """
+    if asset_id in PERISHABLE_ASSET_IDS:
+        return True
+    if not asset_id.startswith("COMM:"):
+        return False
+    ns = asset_id.split(":", 1)[1].split(".", 1)[0]
+    return ns in {CommNamespace.LABOR.value, CommNamespace.SVC.value}
 
 
 class LaborKind(str, Enum):
@@ -151,6 +169,38 @@ class Industry(str, Enum):
 EXTRACTIVE_INDUSTRIES = frozenset({Industry.AGRICULTURE, Industry.MINING})
 
 
+class FirmLifecycle(str, Enum):
+    """Firm lifecycle state machine (doc 10 10.8)."""
+    FOUNDING = "FOUNDING"
+    OPERATING = "OPERATING"
+    EXPANDING = "EXPANDING"
+    RAISING = "RAISING"
+    DISTRIBUTING = "DISTRIBUTING"
+    INSOLVENT = "INSOLVENT"
+    LIQUIDATING = "LIQUIDATING"
+
+
+class Terrain(str, Enum):
+    """Cell terrain (doc 15 15.3, doc 04 4.2.1). Declaration order is canonical."""
+    PLAIN = "PLAIN"
+    FOREST = "FOREST"
+    MOUNTAIN = "MOUNTAIN"
+    DESERT = "DESERT"
+    COAST = "COAST"
+    TUNDRA = "TUNDRA"
+    SWAMP = "SWAMP"
+
+
+class Climate(str, Enum):
+    """Cell climate zone (doc 04 4.4.1, doc 15 15.3). Declaration order = latitude band (canonical)."""
+    TROPICAL = "TROPICAL"
+    ARID = "ARID"
+    TEMPERATE = "TEMPERATE"
+    CONTINENTAL = "CONTINENTAL"
+    POLAR = "POLAR"
+    HIGHLAND = "HIGHLAND"
+
+
 class Cause(str, Enum):
     """Ledger posting cause (doc 15 15.6, doc 08 8.4.2)."""
     TRADE = "TRADE"            # P4 market settlement
@@ -173,9 +223,10 @@ class Cause(str, Enum):
 
 # Causes that may change an asset's total supply (mint/burn points, doc 00 0.10/0.17).
 # A posting whose per-asset net delta is non-zero is only permitted under these.
+# LIQUIDATION burns EQ (and residual securities) at firm wind-up (doc 08 8.6.2, doc 00 0.5.1/0.17).
 MINT_BURN_CAUSES = frozenset({
     Cause.MINT, Cause.BURN, Cause.PRODUCTION, Cause.CONSUMPTION,
-    Cause.GENESIS, Cause.MILITARY, Cause.EXPIRE, Cause.REDEEM,
+    Cause.GENESIS, Cause.MILITARY, Cause.EXPIRE, Cause.REDEEM, Cause.LIQUIDATION,
 })
 
 

@@ -25,7 +25,7 @@ def test_balances_non_negative_and_satiety_bounded():
         eng.run_turn()
         for row in store.ledger.balances().values():
             assert all(q >= 0 for q in row.values())
-        assert all(0 <= store.satiety[a] <= 100 for a in store.agents)
+        assert all(0 <= store.satiety[a] <= 100000 for a in store.agents)   # needs held x1000
 
 
 def test_perishable_labor_fully_expires_each_turn():
@@ -59,8 +59,9 @@ def test_capacity_evolves_with_construction_labor():
     eng = SkeletonEngine(store, c)
     agri = min(store.firms)  # FIRM:000001
     start_cap = store.firms[agri].capacity
+    cap_max = c.capacity_max_for(store.firms[agri].industry)
     for _ in range(48):
         eng.run_turn()
-        assert c.capacity_min <= store.firms[agri].capacity <= c.capacity_max
+        assert 0 <= store.firms[agri].capacity <= cap_max
     # expanding firm should have grown capacity above its initial value
     assert store.firms[agri].capacity > start_cap

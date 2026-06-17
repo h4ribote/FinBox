@@ -38,7 +38,7 @@ def main(n_turns: int = 24) -> None:
     if store.investors:
         inv = store.investors[0]
         print(f"  investor NAV: {store.net_worth(inv):,} (cash {store.cash(inv):,}, "
-              f"bonds {sum(store.ledger.get(inv, b.asset) for b in store.bonds)})")
+              f"bonds {sum(store.ledger.get(inv, b.asset_id) for b in store.bonds)})")
     print(f"  currency conserved: {store.ledger.total_supply(store.cur) == cur_total}")
     print(f"  journal replay matches: {verify_journal_replay(store)}")
     print(f"  deterministic (2 runs identical hashes): {verify_determinism(cfg, n_turns)}")
