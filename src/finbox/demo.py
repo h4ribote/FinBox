@@ -24,15 +24,15 @@ def main(n_turns: int = 24) -> None:
           f"pairs={len(store.pairs)}  bonds={len(store.bonds)}  policy_rate={cfg.cb_policy_rate_bps}bps")
     print(f"  genesis CUR total = {cur_total:,} minor (= {cur_total / 1000:,.3f} ALD)")
     print()
-    print(f"  {'tick':>4} {'food_px':>7} {'gdp':>8} {'agri_cap':>8} "
-          f"{'a1_cash':>9} {'a1_sat':>6} {'gov_cash':>11}  hash[:12]")
-    a1 = store.agents[0]
+    print(f"  {'tick':>4} {'food_px':>7} {'gdp':>8} {'agri_cap':>8} {'cpi':>6} "
+          f"{'unemp':>6} {'avgSat':>6} {'tax':>4}  hash[:12]")
     for _ in range(n_turns):
         engine.run_turn()
+        m = store.macro
         h = state_hash(store)
-        print(f"  {store.tick:>4} {store.last_price[food_pair]:>7} {store.macro['gdp']:>8} "
-              f"{store.firms[agri].capacity:>8} {store.cash(a1):>9} {store.satiety[a1]:>6} "
-              f"{store.cash(store.gov):>11}  {h[:12]}")
+        print(f"  {store.tick:>4} {store.last_price[food_pair]:>7} {m['gdp']:>8} "
+              f"{store.firms[agri].capacity:>8} {m['cpi']:>6} {m['unemployment_bps']:>6} "
+              f"{m['avg_satiety']:>6} {store.policy['tax_bps']:>4}  {h[:12]}")
 
     print()
     if store.investors:

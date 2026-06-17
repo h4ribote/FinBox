@@ -90,12 +90,23 @@ class SkeletonEngine:
         self._tax(food_spend)     # P7 taxation (policy-driven rate)
         self._welfare()           # P7 welfare transfers to low-cash agents
         self._finance()           # P7 coupons / dividends / redemptions
-        self._expire_perishables()  # P9
-        if s.investors:
-            s.macro["investor_nav"] = s.net_worth(s.investors[0])
+        expired = self._expire_perishables()  # P9
+        self._finalize_macro(turnover, expired)
+        s.tick += 1
+
+    def _finalize_macro(self, turnover: int, expired_labor: int) -> None:
+        """P9: confirm macro indicators / KPIs (doc 00 0.16)."""
+        s, c = self.s, self.c
         s.macro["gdp"] = turnover
         s.macro["policy_rate"] = s.cb_policy_rate_bps
-        s.tick += 1
+        if s.investors:
+            s.macro["investor_nav"] = s.net_worth(s.investors[0])
+        n = len(s.agents)
+        s.macro["avg_satiety"] = sum(s.satiety.values()) // n if n else 0
+        supplied = n * c.q_labor_per_worker
+        s.macro["unemployment_bps"] = (expired_labor * 10000) // supplied if supplied else 0
+        food_pid = f"{s.food}/{s.cur}"
+        s.macro["cpi"] = s.last_price[food_pid] * 10000 // c.food_ref_price  # genesis = 10000
 
     def run(self, n_turns: int) -> list[str]:
         return [self._step_hash() for _ in range(n_turns)]
@@ -250,14 +261,20 @@ class SkeletonEngine:
                         lines += [LedgerLine(b.issuer, s.cur, -pay), LedgerLine(e, s.cur, pay)]
                     s.ledger.post(tick, TurnPhase.P7, Cause.REDEEM, lines)
 
-    def _expire_perishables(self) -> None:
+    def _expire_perishables(self) -> int:
+        """Burn unused perishable labor at P9; return the total expired (doc 08 8.9.4)."""
         s = self.s
         labor_assets = s.labor_assets()
-        lines = [LedgerLine(e, a, -q)
-                 for e, row in s.ledger.balances().items()
-                 for a, q in row.items() if a in labor_assets and q > 0]
+        lines: list[LedgerLine] = []
+        expired = 0
+        for e, row in s.ledger.balances().items():
+            for a, q in row.items():
+                if a in labor_assets and q > 0:
+                    lines.append(LedgerLine(e, a, -q))
+                    expired += q
         if lines:
             s.ledger.post(s.tick, TurnPhase.P9, Cause.EXPIRE, lines)
+        return expired
 
 
 def run_skeleton(config: SkeletonConfig, n_turns: int) -> tuple[StateStore, list[str]]:
