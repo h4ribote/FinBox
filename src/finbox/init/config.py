@@ -1,8 +1,8 @@
-"""Walking-skeleton scenario constants (a minimal slice of doc 16).
+"""Walking-skeleton / M3 scenario constants (a minimal slice of doc 16).
 
-A single country (ALD), a single goods market (food / CUR:ALD), N consumer
-agents and one producer firm. Values follow the calibrated reference prices
-(doc 16 16.15.1) at a small scale so the cash loop is stable for a long run.
+One country (ALD), two markets: labor (COMM:labor.unskilled / CUR:ALD) and food
+(COMM:good.food / CUR:ALD). Workers supply labor; the firm buys labor and turns
+it into food under a regional output cap (doc 04/10); agents consume food.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -11,23 +11,22 @@ from dataclasses import dataclass
 @dataclass(frozen=True, slots=True)
 class SkeletonConfig:
     master_seed: int = 0xF1B0C0DE
-    n_agents: int = 8
+    n_agents: int = 6
 
     # market / fiscal
-    fee_rate_bps: int = 5            # doc 16 market.fee_rate_bps
-    consumption_tax_bps: int = 800   # doc 16 fiscal.consumption_tax_rate_bps (8%)
-    food_ref_price: int = 2400       # doc 16 16.15.1 good.food
+    fee_rate_bps: int = 5
+    consumption_tax_bps: int = 800
+    food_ref_price: int = 2400        # doc 16 16.15.1 good.food
+    labor_ref_price: int = 2000       # wage per labor unit (clearing price)
 
-    # production
-    firm_capacity_food: int = 6      # target food inventory the firm refills to each turn
-
-    # P7 cash recycling: firm pays a wage to each agent (closes the agent<->firm loop).
-    # Sized to steady-state food revenue: ~0.33 food/agent/turn x food_ref ~ 800/agent
-    # so the firm neither hoards nor drains (sustainable long-run loop).
-    wage_per_turn: int = 800
+    # production (Leontief, region-capped extraction-style for the slice)
+    food_per_labor: int = 3           # 1 labor unit -> this many food
+    region_cap_food: int = 30         # max food the region can yield per turn (doc 04)
+    firm_food_target: int = 12        # firm refills food inventory toward this
+    q_labor_per_worker: int = 1       # labor units each worker supplies per turn (perishable)
 
     # genesis endowments (minor units)
-    agent_start_cash: int = 50000    # doc 16 16.7.2 labor genesis cash
+    agent_start_cash: int = 50000
     firm_start_cash: int = 200000
     gov_start_cash: int = 100_000_000
     initial_firm_food: int = 6

@@ -7,7 +7,9 @@ from finbox.state import StateStore, state_hash
 
 CUR = AssetId.cur("ALD")
 FOOD = AssetId.comm("good", "food")
+LABOR = AssetId.comm("labor", "unskilled")
 PAIR = TradingPair(FOOD, CUR, MarketKind.GOODS)
+LABOR_PAIR = TradingPair(LABOR, CUR, MarketKind.LABOR)
 
 
 def make_store(cash=(1000, 2000), satiety=((1, 70), (2, 65)), tick=0):
@@ -16,10 +18,12 @@ def make_store(cash=(1000, 2000), satiety=((1, 70), (2, 65)), tick=0):
     lines.append(LedgerLine(EntityId.firm(1), FOOD, 10))
     led.post(0, TurnPhase.INIT, Cause.GENESIS, lines)
     return StateStore(
-        ledger=led, tick=tick, master_seed=123, cur=CUR, food=FOOD, pair=PAIR,
+        ledger=led, tick=tick, master_seed=123, cur=CUR, food=FOOD, labor=LABOR,
+        pair=PAIR, labor_pair=LABOR_PAIR,
         agents=(EntityId.agent(1), EntityId.agent(2)), firm=EntityId.firm(1),
         gov=EntityId.gov("ALD"), cb=EntityId.cb("ALD"), exch=EntityId.exch(),
-        last_price={PAIR.pair_id: 2400},
+        region_cap={FOOD: 30},
+        last_price={PAIR.pair_id: 2400, LABOR_PAIR.pair_id: 2000},
         satiety={EntityId.agent(n): v for n, v in satiety},
         macro={"gdp": 0},
     )

@@ -18,19 +18,20 @@ def main(n_turns: int = 24) -> None:
     cur_total = cfg.n_agents * cfg.agent_start_cash + cfg.firm_start_cash + cfg.gov_start_cash
 
     print("FinBox walking skeleton: one-country (ALD) food economy")
-    print(f"  agents={cfg.n_agents}  food_ref={cfg.food_ref_price}  fee={cfg.fee_rate_bps}bps  "
-          f"tax={cfg.consumption_tax_bps}bps  wage={cfg.wage_per_turn}")
+    print(f"  agents={cfg.n_agents}  food_ref={cfg.food_ref_price}  wage_ref={cfg.labor_ref_price}  "
+          f"fee={cfg.fee_rate_bps}bps  tax={cfg.consumption_tax_bps}bps")
     print(f"  genesis CUR total = {cur_total:,} minor (= {cur_total / 1000:,.3f} ALD display)")
     print()
-    print(f"  {'tick':>4} {'price':>6} {'gdp':>8} {'a1_cash':>9} {'a1_food':>7} "
+    print(f"  {'tick':>4} {'price':>6} {'wage':>5} {'gdp':>8} {'a1_cash':>9} {'a1_food':>7} "
           f"{'a1_sat':>6} {'firm_cash':>10} {'gov_cash':>11}  hash[:12]")
     a1 = store.agents[0]
     for _ in range(n_turns):
         engine.run_turn()
         h = state_hash(store)
         print(f"  {store.tick:>4} {store.last_price[store.pair.pair_id]:>6} "
-              f"{store.macro['gdp']:>8} {store.cash(a1):>9} {store.food_qty(a1):>7} "
-              f"{store.satiety[a1]:>6} {store.cash(store.firm):>10} {store.cash(store.gov):>11}  {h[:12]}")
+              f"{store.macro['wage']:>5} {store.macro['gdp']:>8} {store.cash(a1):>9} "
+              f"{store.food_qty(a1):>7} {store.satiety[a1]:>6} {store.cash(store.firm):>10} "
+              f"{store.cash(store.gov):>11}  {h[:12]}")
 
     print()
     print(f"  currency conserved: {store.ledger.total_supply(store.cur) == cur_total}")

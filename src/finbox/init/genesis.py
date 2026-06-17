@@ -2,7 +2,7 @@
 
 Currency and initial inventories are minted via a single GENESIS posting (the
 genesis mint point, doc 00 0.10). In the full engine the central bank performs
-the mint; the skeleton mints directly to keep the slice small.
+the mint; this slice mints directly to keep it small.
 """
 from __future__ import annotations
 
@@ -17,7 +17,9 @@ from .config import SkeletonConfig
 def genesis(config: SkeletonConfig) -> StateStore:
     cur = AssetId.cur("ALD")
     food = AssetId.comm("good", "food")
-    pair = TradingPair(food, cur, MarketKind.GOODS)
+    labor = AssetId.comm("labor", "unskilled")
+    food_pair = TradingPair(food, cur, MarketKind.GOODS)
+    labor_pair = TradingPair(labor, cur, MarketKind.LABOR)
 
     agents = tuple(EntityId.agent(i) for i in range(1, config.n_agents + 1))
     firm = EntityId.firm(1)
@@ -39,13 +41,17 @@ def genesis(config: SkeletonConfig) -> StateStore:
         master_seed=config.master_seed,
         cur=cur,
         food=food,
-        pair=pair,
+        labor=labor,
+        pair=food_pair,
+        labor_pair=labor_pair,
         agents=agents,
         firm=firm,
         gov=gov,
         cb=cb,
         exch=exch,
-        last_price={pair.pair_id: config.food_ref_price},
+        region_cap={food: config.region_cap_food},
+        last_price={food_pair.pair_id: config.food_ref_price,
+                    labor_pair.pair_id: config.labor_ref_price},
         satiety={a: config.init_satiety for a in agents},
-        macro={"gdp": 0, "last_price": config.food_ref_price},
+        macro={"gdp": 0, "food_price": config.food_ref_price, "wage": config.labor_ref_price},
     )
