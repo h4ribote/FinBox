@@ -21,6 +21,7 @@ from ..init.genesis import genesis
 from ..ledger import LedgerLine
 from ..market import clear
 from ..market.types import Order, TradingPair
+from ..politics import aggregate_scalar
 from ..state import StateStore, state_hash
 
 
@@ -70,6 +71,8 @@ class SkeletonEngine:
                 side=p.side, order_type=p.order_type, limit_price=p.limit_price, qty=q, submit_seq=seq))
             seq += 1
 
+        self._govern()            # P3 GOVERN: aggregate politician proposals into policy
+
         # P4 CLEAR all pairs
         turnover = 0
         food_spend: dict = {}
@@ -81,7 +84,8 @@ class SkeletonEngine:
 
         self._produce_all()       # P5
         self._consume()           # P6
-        self._tax(food_spend)     # P7 taxation
+        self._tax(food_spend)     # P7 taxation (policy-driven rate)
+        self._welfare()           # P7 welfare transfers to low-cash agents
         self._finance()           # P7 coupons / dividends / redemptions
         self._expire_perishables()  # P9
         if s.investors:
@@ -166,16 +170,49 @@ class SkeletonEngine:
         if lines:
             s.ledger.post(s.tick, TurnPhase.P6, Cause.CONSUMPTION, lines)
 
-    def _tax(self, spend: dict) -> None:
+    def _govern(self) -> None:
+        """P3 GOVERN: aggregate per-politician proposals into confirmed policy (doc 12 12.2).
+
+        Proposals are deterministic and spread across politicians so the SCALAR
+        aggregation (mean -> clamp -> tick) is exercised end to end.
+        """
         s, c = self.s, self.c
+        pols = s.politicians
+        if not pols:
+            return
+        n = len(pols)
+        w = [1] * n
+        tax_vals = [c.consumption_tax_bps - 100 + 100 * i for i in range(n)]
+        wel_vals = [2000 + 500 * i for i in range(n)]
+        s.policy["tax_bps"] = aggregate_scalar(tax_vals, w, c.tax_lo, c.tax_hi, c.tax_tick)
+        s.policy["welfare_bps"] = aggregate_scalar(wel_vals, w, c.welfare_lo, c.welfare_hi, c.welfare_tick)
+
+    def _tax(self, spend: dict) -> None:
+        s = self.s
+        rate = s.policy.get("tax_bps", self.c.consumption_tax_bps)
         tlines: list[LedgerLine] = []
         for a in sorted(spend, key=str):
-            tax = min(fixed.apply_bps_floor(spend[a], c.consumption_tax_bps), s.cash(a))
+            tax = min(fixed.apply_bps_floor(spend[a], rate), s.cash(a))
             if tax > 0:
                 tlines.append(LedgerLine(a, s.cur, -tax))
                 tlines.append(LedgerLine(s.gov, s.cur, tax))
         if tlines:
             s.ledger.post(s.tick, TurnPhase.P7, Cause.TAX, tlines)
+
+    def _welfare(self) -> None:
+        s, c = self.s, self.c
+        pay = fixed.apply_bps_floor(c.welfare_base, s.policy.get("welfare_bps", 0))
+        if pay <= 0:
+            return
+        remaining = s.cash(s.gov)
+        lines: list[LedgerLine] = []
+        for a in s.agents:
+            if s.cash(a) < c.welfare_threshold and remaining >= pay:
+                lines.append(LedgerLine(s.gov, s.cur, -pay))
+                lines.append(LedgerLine(a, s.cur, pay))
+                remaining -= pay
+        if lines:
+            s.ledger.post(s.tick, TurnPhase.P7, Cause.SUBSIDY, lines)
 
     def _holders(self, asset: AssetId) -> list[EntityId]:
         bals = self.s.ledger.balances()

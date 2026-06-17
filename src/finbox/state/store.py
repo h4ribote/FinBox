@@ -38,6 +38,9 @@ class StateStore:
     bonds: tuple[Bond, ...] = ()
     equities: tuple[Equity, ...] = ()
     cb_policy_rate_bps: int = 0
+    # politics (M6)
+    politicians: tuple[EntityId, ...] = ()
+    policy: dict[str, int] = field(default_factory=dict)   # e.g. tax_bps, welfare_bps
 
     def qty(self, e: EntityId, a: AssetId) -> int:
         return self.ledger.get(e, a)

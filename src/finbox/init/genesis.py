@@ -36,6 +36,8 @@ def genesis(config: SkeletonConfig) -> StateStore:
     agents = tuple(EntityId.agent(i) for i in range(1, config.n_agents + 1))
     agent_labor = {a: labor[_LABOR_KINDS[i % len(_LABOR_KINDS)]] for i, a in enumerate(agents)}
     investors = tuple(EntityId.agent(config.n_agents + 1 + j) for j in range(config.n_investors))
+    base = config.n_agents + config.n_investors
+    politicians = tuple(EntityId.agent(base + 1 + j) for j in range(config.n_politicians))
 
     agri, manuf, constr = EntityId.firm(1), EntityId.firm(2), EntityId.firm(3)
     firms = {
@@ -72,6 +74,8 @@ def genesis(config: SkeletonConfig) -> StateStore:
         lines.append(LedgerLine(inv, bond.asset, config.bond_qty))           # bond endowment (mint)
         for eq in equities:
             lines.append(LedgerLine(inv, eq.asset, config.equity_shares_per_firm))  # equity (mint)
+    for pol in politicians:
+        lines.append(LedgerLine(pol, cur, config.politician_start_cash))
     ledger.post(0, TurnPhase.INIT, Cause.GENESIS, lines)
 
     last_price = {gp(food).pair_id: config.food_ref_price,
@@ -91,4 +95,6 @@ def genesis(config: SkeletonConfig) -> StateStore:
         macro={"gdp": 0, "investor_nav": 0},
         investors=investors, bonds=(bond,), equities=equities,
         cb_policy_rate_bps=config.cb_policy_rate_bps,
+        politicians=politicians,
+        policy={"tax_bps": config.consumption_tax_bps, "welfare_bps": 0},
     )

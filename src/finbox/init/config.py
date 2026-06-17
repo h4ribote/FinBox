@@ -57,3 +57,15 @@ class SkeletonConfig:
     equity_par: int = 1000
     equity_dividend_bps: int = 200      # 2%/yr, quarterly dividend
     cb_policy_rate_bps: int = 250       # doc 16 fiscal.policy_rate_bps
+
+    # politics / fiscal policy (M6) -- P3 GOVERN aggregation drives these
+    n_politicians: int = 3
+    politician_start_cash: int = 120000
+    tax_lo: int = 0
+    tax_hi: int = 3000
+    tax_tick: int = 50
+    welfare_lo: int = 0
+    welfare_hi: int = 10000
+    welfare_tick: int = 50
+    welfare_base: int = 1000            # minimal-living base; payment = base * welfare_bps/10000
+    welfare_threshold: int = 20000      # agents below this cash receive welfare
