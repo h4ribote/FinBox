@@ -31,7 +31,7 @@ class SkeletonEngine:
         self.c = config
         self.cal = Calendar()
 
-    def run_turn(self) -> None:
+    def run_turn(self, external_protos=None) -> None:
         s, c = self.s, self.c
         tick = s.tick
 
@@ -40,9 +40,12 @@ class SkeletonEngine:
             s.ledger.post(tick, TurnPhase.P1, Cause.PRODUCTION,
                           [LedgerLine(a, s.agent_labor[a], c.q_labor_per_worker) for a in s.agents])
 
-        # P1/P2: collect, deterministic submit_seq, validate+clamp with per-entity
-        # cash/inventory reservation so multiple orders cannot double-spend (doc 09 9.5)
+        # P1/P2: collect scripted intent plus any externally submitted (player/agent) orders,
+        # assign deterministic submit_seq, validate+clamp with per-entity cash/inventory
+        # reservation so multiple orders cannot double-spend (doc 09 9.5)
         protos = generate_orders(s, c)
+        if external_protos:
+            protos = protos + list(external_protos)
         protos.sort(key=lambda p: (str(p.entity), p.pair.pair_id, p.side.value))
         orders_by_pair: dict[str, list[Order]] = defaultdict(list)
         reserved_cash: dict = defaultdict(int)
