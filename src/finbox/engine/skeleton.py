@@ -346,6 +346,8 @@ class SkeletonEngine:
         remaining = s.cash(s.gov)
         lines: list[LedgerLine] = []
         for a in s.agents:
+            if a in s.deceased:              # DECEASED agents are inert: no welfare transfers (doc 05 5.4.1)
+                continue
             if s.cash(a) < c.welfare_threshold and remaining >= pay:
                 lines.append(LedgerLine(s.gov, s.cur, -pay))
                 lines.append(LedgerLine(a, s.cur, pay))

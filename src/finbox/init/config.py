@@ -137,7 +137,24 @@ class SkeletonConfig:
     equity_par: int = 1000
     equity_dividend_bps: int = 200      # profit payout ratio in bps (doc 11 11.6.2 payout_ratio)
     cb_policy_rate_bps: int = 250       # doc 16 fiscal.policy_rate_bps
-    discount_rate_gamma: float = 0.997  # RL reward discount (doc 07 7.6 / doc 16 16.15.5)
+
+    # ML reward coefficients (doc 07 §7.5 / doc 16 §16.15.5). The WORKER reward (7.5.1) is the
+    # weighted needs sum + b_alive + w_wealth·tanh(ΔW/scale_w) − D_death·1[died]. In this
+    # supply-chain slice the only consumption-recovered need (N_consume, 7.5.1) is `satiety`
+    # (food); the others (hydration/comfort/…) are unmodeled and so correctly absent.
+    discount_rate_gamma: float = 0.997  # default discount preset (doc 07 7.5.9 / doc 16 16.15.5)
+    ml_gamma_long: float = 0.999        # long-horizon preset (POLITICIAN/ENTREPRENEUR/INVESTOR, 7.5.9)
+    ml_gamma_short: float = 0.99        # short-horizon preset (WORKER/MARKET_MAKER, 7.5.9)
+    ml_gae_lambda: float = 0.95         # GAE λ (doc 07 7.5.9 / doc 16 16.15.5)
+    ml_b_alive: float = 0.01            # WORKER per-turn survival bonus (7.5.1)
+    ml_d_death: float = 5.0             # death penalty applied once at the terminal turn (7.5.1/7.5.10)
+    ml_d_bankrupt: float = 3.0          # ENTREPRENEUR bankruptcy penalty (7.5.4 / 16.15.5)
+    ml_w_satiety: float = 1.0           # weight of the satiety need term (N_consume, 7.5.1)
+    ml_w_wealth: float = 0.1            # wealth-growth term weight (7.5.1)
+    ml_w_invalid: float = 0.05          # invalid-action (P2 clamp) shaping weight (7.5.10)
+    # WORKER wealth normalization scale_w (7.5.9): chosen from the genesis per-turn flow magnitude
+    # (≈ a worker's wage) so w_wealth·tanh(ΔW/scale_w) stays in [-1,1] over a turn's net-worth change.
+    ml_scale_w: int = 2000
 
     # politics / fiscal policy (M6) -- P3 GOVERN aggregation drives these
     n_politicians: int = 3
