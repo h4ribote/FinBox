@@ -36,13 +36,6 @@ def clamp(x: int, lo: int, hi: int) -> int:
     return lo if x < lo else hi if x > hi else x
 
 
-def fee(cash: int, fee_rate_bps: int) -> int:
-    """Trade fee = ceil(cash * fee_rate_bps / 10000) (doc 00 0.8/0.20). cash,bps >= 0."""
-    if cash < 0 or fee_rate_bps < 0:
-        raise ValueError("fee requires non-negative cash and bps")
-    return ceildiv(cash * fee_rate_bps, BPS_DEN)
-
-
 def apply_bps_floor(base: int, rate_bps: int) -> int:
     """floor(base * rate_bps / 10000): taxes, tariffs, subsidies, per-share dividend (doc 00 0.20)."""
     return (base * rate_bps) // BPS_DEN
@@ -54,6 +47,27 @@ def interest_per_turn(principal: int, r_annual_bps: int, turns_per_year: int) ->
     Facility / borrow / penalty interest accrues every turn (doc 03 3.2.1, doc 11 11.7.1).
     """
     return (principal * r_annual_bps) // (BPS_DEN * turns_per_year)
+
+
+def borrow_rate_bps(u_bps: int, base_rate_bps: int, slope1_bps: int,
+                    slope2_bps: int, u_kink_bps: int) -> int:
+    """Utilization-linked annual borrow rate in bps (kinked money-market curve, doc 11 11.8).
+
+    ``u_bps`` is the pool utilization U = borrowed/supplied in bps. Below the kink the
+    rate rises with ``slope1``; above it with the steeper ``slope2`` (floor at each step).
+    """
+    if u_bps <= u_kink_bps:
+        return base_rate_bps + (u_bps * slope1_bps) // BPS_DEN
+    return (base_rate_bps + (u_kink_bps * slope1_bps) // BPS_DEN
+            + ((u_bps - u_kink_bps) * slope2_bps) // BPS_DEN)
+
+
+def supply_rate_bps(borrow_rate: int, u_bps: int, reserve_factor_bps: int) -> int:
+    """Annual supply rate = floor(borrow_rate · U · (1 − reserve_factor)) in bps (doc 11 11.8).
+
+    The reserve_factor spread (borrow_rate − supply_rate share) accrues to the insurance fund.
+    """
+    return (borrow_rate * u_bps // BPS_DEN) * (BPS_DEN - reserve_factor_bps) // BPS_DEN
 
 
 def coupon_quarterly(qty: int, face: int, coupon_bps: int) -> int:

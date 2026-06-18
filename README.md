@@ -16,15 +16,16 @@
 - M7 `finbox.gateway` — FastAPI ゲートウェイ・提出バッファ・プレイヤー参加・role-gating
 - M8 — マクロ KPI と 10年 (480ターン) の経済安定性検証
 - M9 `finbox.ml` — RL (観測/行動/報酬・PPO・Agent Runtime) でエンジン上の労働者方策を学習
+- 取引市場改修 `finbox.domain.margin` / `finbox.engine.margin` — 全市場から取引手数料と値幅制限 (サーキットブレーカー) を完全撤廃。`CUR/CUR`・`EQ/CUR`・storable `COMM/CUR` で最大5倍の信用取引 (貸借プール・証拠金・P4 内の反復板寄せによる強制決済・保険基金/供給者ヘアカット)、投資家ロールの細分化 (`trade_mode`×`style`、`YIELD_INVESTOR`/`ARBITRAGEUR`/`AMM`)、AMM の受動 ladder を実装。`min_wage` フロアは存続。
 - `finbox.agents` — scripted (heuristic) 方策 / `finbox.init` — シナリオ構成と genesis / `sim/` — 設計値の妥当性検証スクリプト
 
-軍事/領土・多国 FX・中央銀行 OMO 等の一部は doc に定義済みで、エンジンへの実装は後続パスとして残る (各 milestone のコミットに範囲を明記)。
+軍事/領土・多国 FX・中央銀行 OMO、および利回り/裁定/AMM ロールの RL 方策 (報酬係数は構成済み・観測/報酬は doc 07 に定義) 等の一部は doc に定義済みで、エンジンへの実装は後続パスとして残る (各 milestone のコミットに範囲を明記)。
 
 ## 動かし方
 
 ```bash
 python run_demo.py                       # 経済を回し 保存則/リプレイ/決定論 を検証
-pip install -e ".[dev]" && pytest        # テスト (83件)
+pip install -e ".[dev]" && pytest        # テスト (122件)
 ```
 
 依存: numpy。任意で fastapi (M7 API)・torch (M9 RL)。デモは各ターンの価格・GDP・CPI・失業率・満腹度・税率を表示し、通貨保存・journal リプレイ一致・2回実行ハッシュ一致・最終状態ハッシュを出力する。

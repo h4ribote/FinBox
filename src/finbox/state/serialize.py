@@ -43,6 +43,27 @@ def canonical_bytes(store: StateStore) -> bytes:
     for key in sorted(store.policy):
         parts.append(f"policy|{key}|{store.policy[key]}")
 
+    # margin trading state (doc 09 信用取引, doc 15 15.6): positions, lending pools, AMM pools.
+    # Underlying assets are in the ledger balances above; here we hash the bookkeeping records.
+    parts.append(f"posseq|{store.position_seq}")
+    parts.append(f"liqseq|{store.liq_seq}")
+    for p in sorted(store.positions, key=lambda r: r.position_id):
+        parts.append(f"pos|{p.position_id}|{p.entity}|{p.pair_id}|{p.side.value}|{p.qty}|"
+                     f"{p.entry_price}|{p.borrowed_asset}|{p.borrowed_qty}|{p.collateral_asset}|"
+                     f"{p.collateral_qty}|{p.accrued_interest}|{p.open_tick}")
+    for asset in sorted(store.lending_pools):
+        pool = store.lending_pools[asset]
+        parts.append(f"lpool|{asset}|{pool.supplied}|{pool.borrowed}|{pool.total_shares}")
+        for e in sorted(pool.shares, key=str):
+            if pool.shares[e]:
+                parts.append(f"lshare|{asset}|{e}|{pool.shares[e]}")
+    for pid in sorted(store.amm_pools):
+        a = store.amm_pools[pid]
+        parts.append(f"amm|{pid}|{a.r_base}|{a.r_quote}|{a.total_shares}|{a.spread_bps}|{a.invariant.value}")
+        for e in sorted(a.shares, key=str):
+            if a.shares[e]:
+                parts.append(f"ammshare|{pid}|{e}|{a.shares[e]}")
+
     # resting GTC/GTT order book (doc 02 2.6.1 full snapshot, doc 09 9.4.2)
     for o in sorted(store.resting_orders, key=lambda r: r.order_id):
         parts.append(f"rest|{o.order_id}|{o.pair_id}|{o.side.value}|{o.order_type.value}|"

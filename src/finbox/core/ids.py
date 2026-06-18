@@ -11,9 +11,12 @@ from .enums import AssetClass, CommNamespace, CountryCode, EntityKind
 from .errors import IdFormatError
 
 _CC = "(?P<cc>[A-Z]{3})"
+_CCx = r"[A-Z]{3}"                 # non-capturing country code (for ids with >1 cc)
 _SIX = r"(?P<n>\d{6})"
 _MATURITY = r"\d{4}Q[1-4]"
 _NS = "|".join(ns.value for ns in CommNamespace)
+# a margin-tradable asset ref (CUR / storable COMM / EQ) used inside facility ids (doc 00 0.4)
+_ASSET_REF = rf"(?:CUR:{_CCx}|COMM:(?:{_NS})\.[a-z0-9_#]+|EQ:firm\.\d{{6}})"
 
 _ENTITY_PATTERNS: dict[EntityKind, re.Pattern[str]] = {
     EntityKind.AGENT: re.compile(rf"^AGENT:{_SIX}$"),
@@ -22,6 +25,11 @@ _ENTITY_PATTERNS: dict[EntityKind, re.Pattern[str]] = {
     EntityKind.GOVERNMENT: re.compile(rf"^GOV:{_CC}$"),
     EntityKind.CENTRAL_BANK: re.compile(rf"^CB:{_CC}$"),
     EntityKind.EXCHANGE: re.compile(r"^EXCH$"),
+    # protocol facilities (doc 09 信用取引): one lending pool per margin asset, one insurance
+    # fund per currency, one AMM pool per market pair. They hold real balances on the ledger.
+    EntityKind.LENDING_POOL: re.compile(rf"^POOL:{_ASSET_REF}$"),
+    EntityKind.INSURANCE_FUND: re.compile(rf"^INSF:{_CCx}$"),
+    EntityKind.AMM_POOL: re.compile(rf"^AMM:{_ASSET_REF}/CUR:{_CCx}$"),
 }
 
 _ASSET_PATTERNS: dict[AssetClass, re.Pattern[str]] = {
@@ -98,6 +106,26 @@ class EntityId(str):
     @classmethod
     def exch(cls) -> "EntityId":
         return cls("EXCH")
+
+    @classmethod
+    def lending_pool(cls, asset: "AssetId | str") -> "EntityId":
+        """The lending pool that lends ``asset`` (doc 09 信用取引)."""
+        return cls(f"POOL:{asset}")
+
+    @classmethod
+    def insurance_fund(cls, cc: CountryCode | str) -> "EntityId":
+        """The per-currency insurance fund (doc 09 信用取引)."""
+        return cls(f"INSF:{CountryCode(cc).value}")
+
+    @classmethod
+    def amm_pool(cls, pair_id: str) -> "EntityId":
+        """The automated market-maker pool for ``pair_id`` (doc 09 9.7)."""
+        return cls(f"AMM:{pair_id}")
+
+    @property
+    def pool_asset(self) -> "AssetId":
+        """For a LENDING_POOL id, the asset it lends."""
+        return AssetId(self.split(":", 1)[1])
 
 
 class AssetId(str):

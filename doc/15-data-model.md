@@ -45,6 +45,10 @@ erDiagram
   FIRM ||--o{ BOND : issues
   ENTITY ||--o{ BALANCE : holds
   ASSET ||--o{ BALANCE : measured_in
+  ENTITY ||--o{ POSITION : holds
+  POSITION }o--|| MARKETPAIR : on
+  ENTITY ||--o{ LENDINGPOOL : supplies
+  ENTITY ||--o{ AMMPOOL : provides
   ENTITY ||--o{ ORDER : submits
   ORDER }o--|| MARKETPAIR : on
   MARKETPAIR ||--|| ORDERBOOK : has
@@ -64,7 +68,7 @@ erDiagram
   SCENARIOCONFIG ||--|| WORLD : initializes
 ```
 
-`ENTITY` は `AGENT`/`FIRM`/`GOVERNMENT`/`CENTRALBANK`/`PLAYER`/`EXCH` の抽象基底であり、`entity_id` で台帳・注文・取引の主体となる ([00 §0.4](00-glossary.md))。`ASSET` はレジストリ上の資産定義 ([00 §0.5](00-glossary.md))。`BALANCE` は `entity_id × asset_id` の交点に1つ存在する。
+`ENTITY` は `AGENT`/`FIRM`/`GOVERNMENT`/`CENTRALBANK`/`PLAYER`/`EXCH`/`LENDINGPOOL`/`INSURANCEFUND`/`AMMPOOL` の抽象基底であり、`entity_id` で台帳・注文・取引の主体となる ([00 §0.4](00-glossary.md))。`ASSET` はレジストリ上の資産定義 ([00 §0.5](00-glossary.md))。`BALANCE` は `entity_id × asset_id` の交点に1つ存在する。`LENDINGPOOL`/`INSURANCEFUND`/`AMMPOOL` は信用取引・貸借・自動做市のファシリティで、独立のエンティティ種別として実在の台帳残高を保持し (15.6.x)、`POSITION` は信用ポジションの負債・担保会計を保持する (`ENTITY ||--o{ POSITION : holds`、15.6.x)。
 
 ## 15.3 世界・地理 (World / Country / Region / Cell)
 
@@ -153,9 +157,9 @@ erDiagram
 
 | フィールド | 型 | 制約 | 説明 |
 | --- | --- | --- | --- |
-| `entity_id` | `str` | [00 §0.4](00-glossary.md) 形式, 一意 | `AGENT:*`/`FIRM:*`/`GOV:*`/`CB:*`/`PLAYER:*`/`EXCH` |
-| `entity_kind` | `enum<EntityKind>` | `{AGENT,FIRM,GOVERNMENT,CENTRAL_BANK,PLAYER,EXCHANGE}` | 種別判別子 |
-| `country_code` | `id<Country>?` | `EXCH` は `null` | 帰属国 (徴税・国籍判定) |
+| `entity_id` | `str` | [00 §0.4](00-glossary.md) 形式, 一意 | `AGENT:*`/`FIRM:*`/`GOV:*`/`CB:*`/`PLAYER:*`/`EXCH`/`POOL:<asset_id>`/`INSF:<cc>`/`AMM:<pair_id>` |
+| `entity_kind` | `enum<EntityKind>` | `{AGENT,FIRM,GOVERNMENT,CENTRAL_BANK,PLAYER,EXCHANGE,LENDING_POOL,INSURANCE_FUND,AMM_POOL}` | 種別判別子。`LENDING_POOL`/`INSURANCE_FUND`/`AMM_POOL` は信用・貸借・自動做市のファシリティで、実在の台帳残高を保持する (15.6.x) |
+| `country_code` | `id<Country>?` | `EXCH` および資産横断のファシリティ (`POOL:*`/`AMM:*`) は `null`、`INSF:<cc>` は当該通貨国 | 帰属国 (徴税・国籍判定) |
 | `created_tick` | `uint` | `≤ tick` | 生成ターン |
 | `active` | `bool` | — | 清算/死亡で `false` |
 
@@ -270,8 +274,8 @@ erDiagram
 | フィールド | 型 | 制約 | 説明 |
 | --- | --- | --- | --- |
 | `posting_id` | `uint` | 単調増加・一意 | 記帳識別子 (リプレイ順序、[08 §8.4](08-economy-and-ledger.md)) |
-| `cause` | `enum<Cause>` | `{TRADE,PRODUCTION,CONSUMPTION,FISCAL,TAX,TARIFF,SUBSIDY,COUPON,REDEEM,DIVIDEND,MINT,BURN,MILITARY,LIQUIDATION,GENESIS,EXPIRE}` | 原因種別 ([00 §0.10](00-glossary.md), [08 §8.4.2](08-economy-and-ledger.md)) |
-| `cause_ref` | `str?` | — | 原因の参照 (`trade_id`/`production_id`/`policy_id`/`battle_id`) |
+| `cause` | `enum<Cause>` | `{TRADE,PRODUCTION,CONSUMPTION,FISCAL,TAX,TARIFF,SUBSIDY,COUPON,REDEEM,DIVIDEND,MINT,BURN,MILITARY,LIQUIDATION,GENESIS,EXPIRE,POOL_SUPPLY,POOL_WITHDRAW,LOAN,REPAY,INTEREST,LIQUIDATION_PENALTY,HAIRCUT,AMM_SUPPLY,AMM_WITHDRAW}` | 原因種別 ([00 §0.10](00-glossary.md), [08 §8.4.2](08-economy-and-ledger.md))。信用・貸借・AMM 系の `POOL_SUPPLY`/`POOL_WITHDRAW`/`LOAN`/`REPAY`/`INTEREST`/`LIQUIDATION_PENALTY`/`HAIRCUT`/`AMM_SUPPLY`/`AMM_WITHDRAW` は保存系 (ミント/バーン点に含まれない、各資産で総和ゼロ) |
+| `cause_ref` | `str?` | — | 原因の参照 (`trade_id`/`production_id`/`policy_id`/`battle_id`/`loan_id`/`liquidation_id`)。`LOAN`/`REPAY`/`INTEREST`/`HAIRCUT` は `loan_id`、強制決済の記帳は `liquidation_id` を参照する (15.6.x) |
 | `tick` | `uint` | — | 発生ターン |
 | `phase` | `enum<Phase>` | `P0..P9` ([00 §0.11](00-glossary.md)) | 発生フェーズ |
 | `lines` | `list<LedgerLine>` | 非空 | 仕訳明細 |
@@ -284,7 +288,75 @@ erDiagram
 | `asset_id` | `id<Asset>` | 外部キー | 資産 |
 | `delta` | `int` | `≠ 0` | 増減 (借方=正の受取, 貸方=負の払出) |
 
-**二重仕訳不変条件**: 任意の `asset_id` について `Σ delta == 0`。ただし `cause∈{MINT,BURN,PRODUCTION,CONSUMPTION,GENESIS,MILITARY,EXPIRE,REDEEM,LIQUIDATION}` の生成/消滅点では当該資産の総和が非ゼロとなることを許容し、それ以外では総和ゼロ (保存) を強制する ([00 §0.10, §0.17](00-glossary.md))。各ラインの適用後 `balance ≥ 0` でなければ posting 全体を棄却する。
+**二重仕訳不変条件**: 任意の `asset_id` について `Σ delta == 0`。ただし `cause∈{MINT,BURN,PRODUCTION,CONSUMPTION,GENESIS,MILITARY,EXPIRE,REDEEM,LIQUIDATION}` の生成/消滅点では当該資産の総和が非ゼロとなることを許容し、それ以外では総和ゼロ (保存) を強制する ([00 §0.10, §0.17](00-glossary.md))。信用・貸借・AMM 系の `cause∈{POOL_SUPPLY,POOL_WITHDRAW,LOAN,REPAY,INTEREST,LIQUIDATION_PENALTY,HAIRCUT,AMM_SUPPLY,AMM_WITHDRAW}` は保存系 (ミント/バーン点に含めない) として各資産で総和ゼロを強制する。各ラインの適用後 `balance ≥ 0` でなければ posting 全体を棄却する。
+
+## 15.6.1 信用・貸借・自動做市 (Position / LendingPool / InsuranceFund / AMMPool)
+
+信用取引・貸借プール・保険基金・自動做市の正準スキーマ。意味論・証拠金・強制決済・利率は [09 §信用取引/貸借プール/強制決済](09-markets-and-trading.md)、純資産反映は [08 §8.8](08-economy-and-ledger.md)、利息・配当・利回りは [11](11-finance-and-instruments.md)、構成パラメーターは [16](16-configuration-and-initialization.md) を参照する。ファシリティ (`POOL:*`/`INSF:*`/`AMM:*`) はいずれも実在の台帳残高 (15.6 `Balance`) を保持するエンティティであり、貸付・利息・清算・準備金移転はすべて `Posting` の二重仕訳 (保存系 cause) として記帳される。すべての金額・数量・持分は `uint`/`int` の整数で保持し、丸めは [00 §0.20](00-glossary.md) の `floor`/largest-remainder に従う。
+
+### Position
+
+信用ポジション。空売り・レバレッジは現物残高をマイナスにせず本スキーマの負債・担保として計上する (15.6 `Balance` 非負則、[08 §8.8](08-economy-and-ledger.md) の旧 `margin_owed` を本スキーマの `borrowed_*` + `accrued_interest` へ具体化)。
+
+| フィールド | 型 | 制約 | 説明 |
+| --- | --- | --- | --- |
+| `position_id` | `str` | `POS:<6桁>`(ゼロ埋め, 単調増加), 一意 | ポジション識別子 |
+| `entity` | `id<Entity>` | 外部キー → Entity | 建玉主体 (信用可能ロール; [06](06-roles.md)) |
+| `pair_id` | `id<MarketPair>` | 外部キー; `CUR/CUR`・`EQ/CUR`・storable `COMM/CUR` のみ | 対象ペア (信用対象市場) |
+| `side` | `enum<PositionSide>` | `{LONG,SHORT}` | 建て方向 |
+| `qty` | `uint` | `> 0`, `lot_size` の倍数 | ポジション数量 (`base` 建て) |
+| `entry_price` | `uint` | `quote` 単位 | 建値 (約定価格) |
+| `borrowed_asset` | `id<Asset>` | LONG=`quote`/SHORT=`base` | プールから借り入れたアセット |
+| `borrowed_qty` | `uint` | `≥ 0` | 借入数量 (負債) |
+| `collateral_asset` | `id<Asset>` | LONG=`base`(+余剰 `quote`)/SHORT=`quote` | 担保アセット |
+| `collateral_qty` | `uint` | `≥ 0` | 担保数量 |
+| `accrued_interest` | `uint` | `≥ 0`, `quote` 単位 | 未払利息 (P7 で `cause==INTEREST` 支払、未払分を累積) |
+| `open_tick` | `uint` | `≤ tick` | 建玉 tick |
+
+評価 (いずれも `quote` 建ての整数、P4 清算価格 `p*` でマーク): `borrowed_value = borrowed_qty`(LONG) または `borrowed_qty × mark`(SHORT)、`equity = collateral_value − borrowed_value − accrued_interest`、`notional = qty × mark`、`margin_ratio = equity / notional`(bps)。新規建ては P2 VALIDATE で `margin_ratio ≥ initial_margin`(16 `margin.initial_margin`=2000 bps) を要求しクランプ、`margin_ratio < maintenance_margin`(クラス別 16 `margin.maintenance_margin[fx|comm|equity]`) のポジションを P4 で強制決済する ([09 §強制決済](09-markets-and-trading.md))。`borrowed_qty` の現物はプール→建玉主体へ `cause==LOAN`、返済は `cause==REPAY`、清算ペナルティは `cause==LIQUIDATION_PENALTY` で `INSF:<cc>` へ移転する (`cause_ref` に `loan_id`/`liquidation_id`)。
+
+### LendingPool
+
+信用対象アセットごとに1つ開設する貸借プール (エンティティ `POOL:<asset_id>`)。供給者の預入アセットを借り手へ貸し出し、利用率連動金利で需給を均衡させる。
+
+| フィールド | 型 | 制約 | 説明 |
+| --- | --- | --- | --- |
+| `asset` | `id<Asset>` | 1:1; 信用対象アセット (`CUR:*`/`EQ:firm.*`/storable `COMM:*`) | プール対象アセット (`POOL:<asset>` の `<asset>`) |
+| `supplied` | `uint` | `≥ borrowed` | 供給総量 (預入累計、現物は台帳残高で保持) |
+| `borrowed` | `uint` | `0 ≤ borrowed ≤ supplied` | 貸出中数量 (借り手の負債合計) |
+| `total_shares` | `uint` | `≥ 0` | 発行済プール持分総数 |
+| `shares` | `map<id<Entity>, uint>` | 値 `≥ 0`, `Σ == total_shares` | 供給者別持分 (引出は持分按分) |
+
+利用可能残高 `available = ledger(POOL, asset) = supplied − borrowed`。利用率 `U = borrowed / supplied`(bps)。借入金利はキンク・モデル: `U ≤ U_kink` で `borrow_rate = base_rate + U·slope1/10000`、`U > U_kink` で `borrow_rate = base_rate + U_kink·slope1/10000 + (U−U_kink)·slope2/10000`、`supply_rate = floor(borrow_rate · U/10000 · (10000−reserve_factor)/10000)`(既定 16 `lending.*`: `U_kink`=8000, `slope1`=400, `slope2`=6000, `reserve_factor`=1000、通貨プール `base_rate=policy_rate[s]`、アセットプール `base_rate`=`lending.base_rate`=200)。預入は `qty·total_shares/pool_value`(空のとき `qty`) の持分をミントし `cause==POOL_SUPPLY`、引出は持分按分で `available` を上限に償還し `cause==POOL_WITHDRAW`(預入→引出は P4 板寄せより前に確定; [09 §プール操作の順序](09-markets-and-trading.md))。利息は P7 で `borrow_rate` 分を借り手が支払い、`reserve_factor` 分が `INSF:<cc>` へ、残りはプールに留保され供給者は持分価値の上昇で実現する。genesis は home 通貨プールのみシード (16 `lending.genesis_supply`=2,000,000、持分はシード投資家)。
+
+### InsuranceFund
+
+通貨ごとに1つ開設する保険基金 (エンティティ `INSF:<cc>`)。不良債権 (`equity < 0`) の first-loss バッファ。
+
+| フィールド | 型 | 制約 | 説明 |
+| --- | --- | --- | --- |
+| `cc` | `id<Country>` | 1:1; 通貨国 | 基金通貨 (`INSF:<cc>` の `<cc>`) |
+| `balance` | `uint` | `≥ 0` | 基金残高 (`CUR:<cc>` 建て、台帳残高で保持) |
+
+積み増し: genesis シード (16 `insurance.genesis_seed`=1,000,000) + 清算ペナルティ (`cause==LIQUIDATION_PENALTY`) + 金利スプレッド (`reserve_factor` 分の `cause==INTEREST`)。補填: 不良債権の不足分を `cause==HAIRCUT` でプール/借り手へ移転する。基金が尽きた残余は供給者持分の按分ヘアカット (largest-remainder; [00 §0.20](00-glossary.md)) としてプール持分を書き下げ (`LendingPool.supplied`/`borrowed` 減)、`cause==HAIRCUT` で記帳する。ミントは行わず損失は実在保有者間で清算する。
+
+### AMMPool
+
+ペアごとの自動マーケットメイカー (エンティティ `AMM:<pair_id>`)。RL クォートに依らず決定論的価格カーブで全ペアに流動性を供給する受動做市ファシリティ。既定無効 (16 `amm.enabled`=False、iceberg と同様の opt-in)。
+
+| フィールド | 型 | 制約 | 説明 |
+| --- | --- | --- | --- |
+| `pair_id` | `id<MarketPair>` | 1:1 | 対象ペア (`AMM:<pair_id>` の `<pair_id>`) |
+| `base` | `id<Asset>` | `= pair.base` | 準備金の `base` アセット |
+| `quote` | `id<Asset>` | `= pair.quote`, `asset_class==CUR` | 準備金の `quote` 通貨 |
+| `invariant` | `enum<AMMInvariant>` | `{CONST_PRODUCT,CONCENTRATED}` | 価格カーブ不変量 (16 `amm.invariant[class]`: FX→`CONCENTRATED`, EQ/COMM→`CONST_PRODUCT`) |
+| `spread_bps` | `uint` | `≥ 0` | カーブ内蔵の気配幅 (手数料ではない、撤廃対象外; 16 `amm.spread_bps[class]`: FX 10/EQ 50/COMM 30) |
+| `r_base` | `uint` | `≥ 0` | `base` 準備金 (台帳残高で保持) |
+| `r_quote` | `uint` | `≥ 0` | `quote` 準備金 (台帳残高で保持) |
+| `total_shares` | `uint` | `≥ 0` | 発行済 LP 持分総数 |
+| `shares` | `map<id<Entity>, uint>` | 値 `≥ 0`, `Σ == total_shares` | LP 別持分 (引出は準備金比按分) |
+
+mid `= r_quote // r_base`。毎ターン mid を中心に `spread_bps` を内蔵した BUY/SELL の梯子 (`amm.ladder_levels`=8 水準) を `LIMIT` 注文として板寄せ ([09 §9.3](09-markets-and-trading.md)) へ投入し、約定後に約定量だけ `r_base`/`r_quote` を更新する。LP 供給 (`cause==AMM_SUPPLY`) は `base`+`quote` を準備金へ預け持分をミント、引出 (`cause==AMM_WITHDRAW`) は持分按分で準備金比に償還する。genesis シード 16 `amm.genesis_seed`=1,000,000。`AMM` は在庫 (準備金) 以上を約定しないため非負・保存則を破らず支払不能に陥らない。
 
 ## 15.7 市場 (MarketPair / OrderBook / Order / Trade / OHLCBar)
 
@@ -350,10 +422,9 @@ erDiagram
 | `price` | `uint` | 清算価格 | 約定単価 |
 | `quantity` | `uint` | `> 0` | 約定数量 |
 | `cash` | `uint` | `= price × quantity` | 現金移動額 (端数なし; [00 §0.8](00-glossary.md)) |
-| `fee_buy`, `fee_sell` | `uint` | `= ceil(cash × fee_rate)` | `EXCH` 収受手数料 |
 | `tick` | `uint` | — | 約定ターン (P4) |
 
-不変条件: `buyer ≠ seller`。生成する `Posting` は `base` で `+quantity`(buyer)/`-quantity`(seller)、`quote` で `-(cash+fee_buy)`(buyer)/`+cash`(seller)/`+(fee_buy+fee_sell)`(EXCH) と各資産で総和ゼロ。
+不変条件: `buyer ≠ seller`。生成する `Posting` は `base` で `+quantity`(buyer)/`-quantity`(seller)、`quote` で `-cash`(buyer)/`+cash`(seller) と各資産で総和ゼロ。約定に手数料は存在しない (`EXCH` は清算・決済のみを担い手数料を収受しない; [00 §0.8](00-glossary.md)、[08 §8.5](08-economy-and-ledger.md)、[09 §9.6.1](09-markets-and-trading.md))。
 
 ### OHLCBar
 
@@ -558,7 +629,6 @@ P9 で生成される世界イベントの監査・観測ログ ([07](07-machine
 | `genesis_endowments` | `list<EndowmentRule>` | — | 初期配賦 (`cause==GENESIS` 移転; [00 §0.10](00-glossary.md)) |
 | `assets` | `list<AssetDef>` | — | 追加資産定義 ([00 §0.5](00-glossary.md)) |
 | `recipes` | `list<ProductionRecipe>` | — | 生産レシピ表 |
-| `fee_rate_bps` | `uint` | `≥ 0` | 取引手数料率 ([00 §0.8](00-glossary.md)) |
 | `min_units` | `map<asset_id, uint>` | `CUR:*` | 通貨ごとの価格最小単位 (`money_minor_unit` の通貨別上書き。未指定通貨は既定 1000) |
 | `population_init` | `map<country_code, uint>` | — | 初期人口 |
 | `wui_init_weights` | `map<asset_id, int>` | 合計=10000 | WUI 初期重み (等加重) |
@@ -575,9 +645,10 @@ P9 で生成される世界イベントの監査・観測ログ ([07](07-machine
 flowchart LR
   subgraph SS[Snapshot @ tick T]
     SW[World/Calendar/RNG] --- SG[Geo: Country/Region/Cell]
-    SE[Entities: Agent/Firm/Gov/CB/Player] --- SN[NeedStates]
+    SE[Entities: Agent/Firm/Gov/CB/Player/Pool/Insf/AMM] --- SN[NeedStates]
     SL[Ledger: Balance] --- SM[Markets: Pair/Book/Order]
-    SF[Instruments: Bond/Equity] --- SP[Production plans]
+    SC[Credit: Position/LendingPool/InsuranceFund/AMMPool] --- SF[Instruments: Bond/Equity]
+    SF --- SP[Production plans]
     SPo[Policies/Votes] --- SMi[Military/Battles]
     SI[MacroIndicators/WUI/OHLC] --- SEv[NewsEvents]
   end
@@ -592,10 +663,11 @@ flowchart LR
 - `World` (seed, tick, calendar, scenario_id, wui, rng_state)
 - 地理: `Country` / `Region` / `Cell` 全件 (領有 `owner` を含む)
 - レジストリ: `Asset` 全件
-- エンティティ: `Agent` / `Firm` / `Government` / `CentralBank` / `Player` / `EXCH` 全件と `active`/`alive`
+- エンティティ: `Agent` / `Firm` / `Government` / `CentralBank` / `Player` / `EXCH` / `LendingPool`(`POOL:*`) / `InsuranceFund`(`INSF:*`) / `AMMPool`(`AMM:*`) 全件と `active`/`alive`
 - `NeedState` 全件
 - 台帳: `Balance` 全件 (疎; `quantity>0` のみ)
 - 市場: `MarketPair` / `OrderBook` / 未約定 `Order` (`OPEN`/`PARTIAL`)
+- 信用・貸借・做市: 建玉中 `Position`(`POS:*`) 全件、`LendingPool`(`supplied`/`borrowed`/`total_shares`/`shares`)、`InsuranceFund`(`balance`)、`AMMPool`(`r_base`/`r_quote`/`invariant`/`spread_bps`/`total_shares`/`shares`) (15.6.1)
 - 金融商品: `Bond` / `Equity` (`outstanding`/`shares_outstanding` を含む)
 - 生産: 当ターンの `ProductionPlan`、運用 `ProductionRecipe`
 - 政治: 有効 `Policy`、当ターンの `PolicyVote`
@@ -603,7 +675,7 @@ flowchart LR
 - 指標: `MacroIndicators` (COUNTRY/WORLD)、`WUIState`、各 `pair` の `OHLCBar` (TURN/MONTH/QUARTER/YEAR の最新)
 - ログ: 当ターン生成の `NewsEvent`
 
-不変条件の自己検証 (スナップショット整合): 全資産で `Σ balance == 発行/生成総量`(保存則)、全 `Balance.quantity ≥ 0`、`EQ` 保有合計 `== shares_outstanding`、`BOND` 保有合計 `== outstanding`、外部キー (`Cell.owner→Country`, `Firm.industry→Industry`, `Order.entity→Entity`, `Bond.issuer→Entity`, `Equity.firm→Firm`) の充足を満たすこと ([00 §0.17](00-glossary.md))。
+不変条件の自己検証 (スナップショット整合): 全資産で `Σ balance == 発行/生成総量`(保存則; 貸付債権 (+) と返済債務 (−)、プール/AMM 持分とファシリティ残高はネットしてゼロ)、全 `Balance.quantity ≥ 0`、`EQ` 保有合計 `== shares_outstanding`、`BOND` 保有合計 `== outstanding`、各 `LendingPool` で `borrowed ≤ supplied` かつ `Σ shares == total_shares` かつ `ledger(POOL,asset) == supplied − borrowed`、各 `AMMPool` で `Σ shares == total_shares`、外部キー (`Cell.owner→Country`, `Firm.industry→Industry`, `Order.entity→Entity`, `Bond.issuer→Entity`, `Equity.firm→Firm`, `Position.entity→Entity`, `Position.pair_id→MarketPair`) の充足を満たすこと ([00 §0.17](00-glossary.md))。
 
 ### アクションログ (ActionLog)
 

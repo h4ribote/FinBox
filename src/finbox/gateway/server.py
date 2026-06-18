@@ -16,13 +16,18 @@ import json
 from typing import Any
 
 from ..agents.scripted import ProtoOrder
-from ..core.enums import CountryCode, OrderType, Side
-from ..core.ids import EntityId
+from ..core.enums import (
+    CountryCode, OrderType, PositionSide, Side, TradeMode, is_margin_eligible_base)
+from ..core.ids import AssetId, EntityId
 from ..engine.skeleton import SkeletonEngine
 from ..state import StateStore, state_hash
 from .buffer import SubmissionBuffer
 
-CAPITAL_ROLES = {"ENTREPRENEUR", "INVESTOR", "MARKET_MAKER"}     # may trade financial instruments (doc 06 6.9)
+# INVESTOR and its derived specializations may trade financial instruments (doc 06 6.6/6.9)
+CAPITAL_ROLES = {"ENTREPRENEUR", "INVESTOR", "MARKET_MAKER",
+                 "YIELD_INVESTOR", "ARBITRAGEUR", "AMM"}
+# roles allowed to open MARGIN (信用取引) positions (doc 06 6.5/6.6)
+MARGIN_ROLES = {"INVESTOR", "YIELD_INVESTOR", "ARBITRAGEUR", "MARKET_MAKER"}
 GOVERN_ROLES = {"POLITICIAN", "CENTRAL_BANKER", "BUREAUCRAT", "GENERAL", "DIPLOMAT"}
 VOTE_LEVERS = {"policy_rate", "tax_income", "tax_corporate", "tax_consumption", "gov_spending",
                "welfare_level", "bond_issuance_cap", "subsidy_focus", "subsidy_rate",
@@ -84,9 +89,10 @@ class Gateway:
         c = self.config
         granted: list[str] = []
         for r in requested:
-            if r == "INVESTOR" \
+            if r in ("INVESTOR", "YIELD_INVESTOR", "ARBITRAGEUR") \
                     or (r == "ENTREPRENEUR" and c.allow_entrepreneur) \
                     or (r == "MARKET_MAKER" and c.allow_market_maker) \
+                    or (r == "AMM" and c.allow_amm) \
                     or (r in GOVERN_ROLES and c.allow_public_roles):
                 granted.append(r)
             else:
@@ -183,12 +189,28 @@ class Gateway:
             qty = getattr(r, "quantity", None)
             qty = getattr(r, "qty", qty) if qty is None else qty   # accept canonical 'quantity'
             price = getattr(r, "price", None)
-            # preflight balance check (doc 14 14.5.1): SELL needs base inventory
-            if Side(r.side) is Side.SELL and self.store.ledger.get(ent, pair.base) < (qty or 0):
+            mode = TradeMode(getattr(r, "trade_mode", "SPOT") or "SPOT")
+            pside = getattr(r, "position_side", None)
+            intent = getattr(r, "intent", "OPEN") or "OPEN"
+            position_id = getattr(r, "position_id", None)
+            if mode is TradeMode.MARGIN:
+                if not self.config.allow_margin or not (roles & MARGIN_ROLES):
+                    rejected.append({"client_ref": cref, "code": "role_not_permitted",
+                                     "message": f"margin trading requires {sorted(MARGIN_ROLES)}"})
+                    continue
+                if not is_margin_eligible_base(str(pair.base)) or str(pair.quote) != str(self.store.cur):
+                    rejected.append({"client_ref": cref, "code": "validation_failed",
+                                     "message": "pair not margin-eligible (CUR/CUR, EQ/CUR, storable COMM/CUR)"})
+                    continue
+            elif Side(r.side) is Side.SELL and self.store.ledger.get(ent, pair.base) < (qty or 0):
+                # SPOT SELL needs base inventory (no naked spot short, doc 09 9.5)
                 rejected.append({"client_ref": cref, "code": "insufficient_balance",
                                  "message": f"{pair.base} balance {self.store.ledger.get(ent, pair.base)} < {qty}"})
                 continue
-            proto = ProtoOrder(ent, pair, Side(r.side), OrderType(getattr(r, "order_type", "LIMIT")), price, qty)
+            proto = ProtoOrder(ent, pair, Side(r.side), OrderType(getattr(r, "order_type", "LIMIT")),
+                               price, qty, trade_mode=mode,
+                               position_side=PositionSide(pside) if pside else None,
+                               intent=intent, position_id=position_id)
             self._order_seq += 1
             oid = f"ORD:{self.store.tick:06d}:{self._order_seq:04d}"
             self._orders[oid] = {"entity": ent, "tick": self.store.tick, "proto": proto}
@@ -196,6 +218,22 @@ class Gateway:
             accepted.append({"client_ref": cref, "order_id": oid, "status": "QUEUED"})
         self.buffer.submit(self.store.tick, ent, protos)        # idempotent latest-wins
         return {"tick": self.store.tick, "accepted": accepted, "rejected": rejected}
+
+    def lending_op(self, token: str | None, kind: str, asset_id: str, amount: int) -> dict:
+        """Queue a lending-pool deposit (SUPPLY) or redemption (WITHDRAW); applied at next P4 start.
+
+        Pool operations are confirmed before board-clearing (doc 09 §プール操作の順序).
+        """
+        claims = self._auth(token)
+        if "trade" not in claims["scope"]:
+            raise Forbidden("role_not_permitted")
+        if asset_id not in self.store.lending_pools:
+            raise NotFound("unknown pool")
+        ent = EntityId(claims["sub"])
+        self.store.pending_pool_ops.append(
+            {"kind": kind, "entity": ent, "asset": AssetId(asset_id), "qty": int(amount)})
+        return {"queued": True, "kind": kind, "asset_id": asset_id, "amount": int(amount),
+                "tick": self.store.tick}
 
     def cancel_order(self, token: str | None, order_id: str) -> dict:
         claims = self._auth(token)
@@ -227,6 +265,25 @@ class Gateway:
         return {"accepted": True}
 
     # ---- read (doc 14 14.4) ----
+    def _lending_view(self) -> list[dict]:
+        """Per-pool observation: utilization, borrow/supply rates, available (doc 09 §貸借プール)."""
+        s, m = self.store, self.engine.margin
+        c = self.config
+        out = []
+        for asset in sorted(s.lending_pools):
+            pool = s.lending_pools[asset]
+            base_rate = m._base_rate(pool)
+            out.append({
+                "asset_id": asset, "supplied": pool.supplied, "borrowed": pool.borrowed,
+                "available": s.ledger.get(pool.entity_id, pool.asset),
+                "utilization_bps": pool.utilization_bps(),
+                "borrow_rate_bps": pool.borrow_rate(base_rate, c.lending_slope1_bps,
+                                                    c.lending_slope2_bps, c.lending_u_kink_bps),
+                "supply_rate_bps": pool.supply_rate(base_rate, c.lending_slope1_bps, c.lending_slope2_bps,
+                                                    c.lending_u_kink_bps, c.lending_reserve_factor_bps),
+            })
+        return out
+
     def public_state(self) -> dict:
         s = self.store
         cal = self.engine.cal
@@ -237,6 +294,12 @@ class Gateway:
             "wui_level": s.macro.get("investor_nav", 0),
             "prices": dict(s.last_price),
             "macro": {k: v for k, v in s.macro.items()},
+            # margin facilities (doc 09 信用取引): lending pools, insurance buffer, AMM reserves
+            "lending_pools": self._lending_view(),
+            "insurance": {a: s.ledger.get(e, s.cur) for a, e in s.insurance.items()},
+            "amm_pools": [{"pair": a.pair_id, "r_base": a.r_base, "r_quote": a.r_quote,
+                           "spread_bps": a.spread_bps, "invariant": a.invariant.value}
+                          for a in s.amm_pools.values()],
             "state_hash": state_hash(s),
         }
 
@@ -251,13 +314,28 @@ class Gateway:
             for oid, v in self._orders.items()
             if v["entity"] == ent and v["tick"] == self.store.tick
         ]
+        s = self.store
+        positions = []
+        for pos in s.positions:
+            if pos.entity != ent:
+                continue
+            base = pos.pair_id.split("/", 1)[0]
+            mark = s.mark_price(base)
+            positions.append({
+                "position_id": pos.position_id, "pair": pos.pair_id, "side": pos.side.value,
+                "qty": pos.qty, "entry_price": pos.entry_price,
+                "borrowed_asset": str(pos.borrowed_asset), "borrowed_qty": pos.borrowed_qty,
+                "collateral_asset": str(pos.collateral_asset), "collateral_qty": pos.collateral_qty,
+                "accrued_interest": pos.accrued_interest,
+                "equity_str": str(pos.equity(mark)), "margin_ratio_bps": pos.margin_ratio_bps(mark),
+            })
         return {
             "entity_id": str(ent),
-            "tick": self.store.tick,
+            "tick": s.tick,
             "balances": [{"asset_id": str(a), "amount_str": str(q)} for a, q in bals.items()],
             "open_orders": open_orders,
-            "net_worth_wui_str": str(self.store.net_worth(ent)),
-            "liabilities": [],
+            "net_worth_wui_str": str(s.net_worth(ent)),
+            "positions": positions,   # margin (信用) positions with mark-to-market equity / margin ratio
         }
 
     # ---- engine step (P1 deadline -> P2..P9) ----
@@ -327,9 +405,18 @@ def create_app(gateway: Gateway):
         client_ref: str | None = None
         tif: str = "GFT"
         expires_tick: int | None = None
+        # margin (信用取引, doc 09 / doc 14 14.6.1): SPOT board orders ignore these
+        trade_mode: str = "SPOT"             # SPOT | MARGIN
+        position_side: str | None = None     # LONG | SHORT (MARGIN only)
+        intent: str = "OPEN"                 # OPEN | CLOSE
+        position_id: str | None = None       # target position for intent=CLOSE
 
     class OrdersReq(BaseModel):
         orders: list[OrderReq]
+
+    class LendingReq(BaseModel):
+        asset_id: str
+        amount: int                          # SUPPLY: asset units; WITHDRAW: pool shares
 
     class PolicyVote(BaseModel):
         lever: str
@@ -407,6 +494,28 @@ def create_app(gateway: Gateway):
             return err("unauthenticated")
         except NotCancellable:
             return err("order_not_cancellable")
+
+    @app.post("/v1/lending/{asset_id}/deposit")
+    def lending_deposit(asset_id: str, body: LendingReq, authorization: str = Header(None)):
+        try:
+            return gateway.lending_op(bearer(authorization), "SUPPLY", asset_id, body.amount)
+        except Unauthenticated:
+            return err("unauthenticated")
+        except Forbidden as e:
+            return err(str(e) or "role_not_permitted")
+        except NotFound:
+            return err("not_found")
+
+    @app.post("/v1/lending/{asset_id}/withdraw")
+    def lending_withdraw(asset_id: str, body: LendingReq, authorization: str = Header(None)):
+        try:
+            return gateway.lending_op(bearer(authorization), "WITHDRAW", asset_id, body.amount)
+        except Unauthenticated:
+            return err("unauthenticated")
+        except Forbidden as e:
+            return err(str(e) or "role_not_permitted")
+        except NotFound:
+            return err("not_found")
 
     @app.post("/v1/governments/{cc}/vote")
     def vote(cc: str, body: VoteReq, authorization: str = Header(None)):

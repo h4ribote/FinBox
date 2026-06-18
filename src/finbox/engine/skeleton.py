@@ -12,10 +12,10 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import replace
 
-from ..agents.scripted import ProtoOrder, generate_orders
+from ..agents.scripted import generate_orders
 from ..core import fixed
 from ..core.enums import (
-    Cause, FirmLifecycle, MarketKind, OrderType, Side, TIF, TurnPhase, is_perishable)
+    Cause, FirmLifecycle, OrderType, Side, TIF, TradeMode, TurnPhase, is_perishable)
 from ..core.ids import AssetId, EntityId
 from ..core.rng import STREAM_DEMOGRAPHY, rng as derive_rng
 from ..core.time import Calendar
@@ -25,10 +25,10 @@ MIGRATE_PCT = 5    # per-turn migration probability when a strictly better cell 
 from ..init.config import SkeletonConfig
 from ..init.genesis import genesis
 from ..ledger import LedgerLine
-from ..market import clear
 from ..market.types import Order, TradingPair
 from ..politics import aggregate_scalar
 from ..state import StateStore, state_hash
+from .margin import MarginEngine
 
 
 class SkeletonEngine:
@@ -36,6 +36,7 @@ class SkeletonEngine:
         self.s = store
         self.c = config
         self.cal = Calendar()
+        self.margin = MarginEngine(self)   # 信用取引: lending, positions, forced liquidation (doc 09)
         self._next_player = 0          # per-room PLAYER numbering from 0 (doc 13 13.3.2)
 
     def onboard_player(self, endowment: int) -> EntityId:
@@ -63,13 +64,18 @@ class SkeletonEngine:
         protos = generate_orders(s, c)
         if external_protos:
             protos = protos + list(external_protos)
-        protos.sort(key=lambda p: (str(p.entity), p.pair.pair_id, p.side.value))
+        protos.sort(key=lambda p: (str(p.entity), p.pair.pair_id, p.side.value, p.intent))
+        spot_protos = [p for p in protos if p.trade_mode is TradeMode.SPOT]
+        margin_protos = [p for p in protos if p.trade_mode is TradeMode.MARGIN]
 
         # Action Log: append this tick's collected pre-validation intents, tagged with entity_id
         # (doc 02 2.6.1); the basis for action-log replay verification (doc 02 2.6.2)
         s.action_log.append({"tick": tick, "intents": [
             {"entity": str(p.entity), "kind": "ORDER", "pair": p.pair.pair_id,
-             "side": p.side.value, "qty": p.qty} for p in protos]})
+             "side": p.side.value, "qty": p.qty, "mode": p.trade_mode.value} for p in protos]})
+
+        # P4-pre (doc 09 §プール操作の順序): confirm lending-pool deposits/withdrawals before clearing
+        self.margin.process_pool_ops()
 
         orders_by_pair: dict[str, list[Order]] = defaultdict(list)
         reserved_cash: dict = defaultdict(int)
@@ -90,9 +96,9 @@ class SkeletonEngine:
             orders_by_pair[pair.pair_id].append(o)
             live_orders.append(o)
 
-        # (b) fresh orders this turn (submit_seq = tick-scoped key so carried < fresh)
+        # (b) fresh spot orders this turn (submit_seq = tick-scoped key so carried < fresh)
         seq = 0
-        for p in protos:
+        for p in spot_protos:
             pair = p.pair
             q = self._reserve(p.entity, pair, p.side, p.limit_price, p.qty,
                               reserved_cash, reserved_sell)
@@ -109,6 +115,16 @@ class SkeletonEngine:
 
         self._govern()            # P3 GOVERN: aggregate politician proposals into policy
 
+        # margin opens (信用取引): borrow from lending pools and inject the opening board orders so
+        # they clear on the same board as spot (doc 09 §信用取引), reserved against margin + borrow
+        for o in self.margin.open_orders(margin_protos, reserved_cash, reserved_sell, tick):
+            orders_by_pair[o.pair_id].append(o)
+            live_orders.append(o)
+
+        # AMM passive ladder (doc 09 9.7): deterministic per-pair liquidity from pool reserves
+        for o in self.margin.amm_orders(tick):
+            orders_by_pair[o.pair_id].append(o)
+
         # P4 CLEAR all pairs
         turnover = 0
         food_spend: dict = {}
@@ -120,6 +136,7 @@ class SkeletonEngine:
                 filled[oid] = filled.get(oid, 0) + fq
             if pair.base == s.food:
                 food_spend = spend
+        self.margin.sync_amm_reserves()   # re-read AMM reserves after trading (doc 09 9.7)
         self._roll_resting_book(live_orders, filled)   # GTC/GTT carry, GFT/IOC/FOK drop (doc 09 9.6.5)
 
         self._produce_all()       # P5
@@ -128,6 +145,7 @@ class SkeletonEngine:
         # P7 protocol-transfer order (doc 03 3.7): taxation -> coupon/redemption -> dividend -> subsidy
         self._tax(food_spend)     # P7 taxation (policy-driven rate)
         self._finance()           # P7 coupons -> redemptions -> dividends
+        self.margin.accrue_interest()   # P7 margin borrow interest -> pool + insurance (doc 09 §利息の発生)
         self._welfare()           # P7 subsidy / welfare transfers to low-cash agents
         self._liquidate_insolvent()  # P7 insolvency -> liquidation (doc 10.8.5)
         expired = self._expire_perishables()  # P9
@@ -158,42 +176,26 @@ class SkeletonEngine:
         return state_hash(self.s)
 
     # ---- market helpers ----
-    def _fee_bps(self, pair: TradingPair) -> int:
-        """FX pairs (both legs CUR) use the lower fx fee, others the standard fee (doc 09 9.6.1)."""
-        return self.c.fx_fee_rate_bps if pair.kind is MarketKind.FX else self.c.fee_rate_bps
-
-    def _band_bps(self, pair: TradingPair) -> int:
-        """Circuit-breaker band by market kind (doc 09 9.8.3)."""
-        c = self.c
-        return {
-            MarketKind.FX: c.price_band_fx_bps,
-            MarketKind.EQUITY: c.price_band_equity_bps,
-            MarketKind.BOND: c.price_band_bond_bps,
-        }.get(pair.kind, c.price_band_commodity_bps)   # GOODS / LABOR -> commodity band
-
     def _reserve(self, entity: EntityId, pair: TradingPair, side: Side,
                  limit_price: int | None, requested: int, rcash: dict, rsell: dict) -> int:
-        """Validate+clamp one order against current balances (doc 09 9.5); return fillable qty."""
+        """Validate+clamp one order against current balances (doc 09 9.5); return fillable qty.
+
+        There are no trading fees and no price-band clamps (both removed): a BUY simply reserves
+        ``price × qty`` of quote; a market BUY reserves at the last price (no band ceiling).
+        """
         s = self.s
-        rate = self._fee_bps(pair)
         if side is Side.BUY:
             if limit_price is None:
-                # market buy: reserve worst-case cash at the circuit-breaker ceiling (doc 09 9.5)
-                band = self._band_bps(pair)
-                pref = s.last_price[pair.pair_id]
-                rprice = fixed.ceildiv(pref * (10000 + band), 10000) if band > 0 else pref
-                rprice = max(1, rprice)
+                rprice = max(1, s.last_price[pair.pair_id])    # market buy: reserve at last price
             else:
                 if limit_price <= 0:
                     return 0
                 rprice = limit_price
             avail = s.ledger.get(entity, pair.quote) - rcash[entity]
             q = min(requested, avail // rprice) if rprice > 0 else 0
-            while q > 0 and rprice * q + fixed.fee(rprice * q, rate) > avail:
-                q -= 1
             if q <= 0:
                 return 0
-            rcash[entity] += rprice * q + fixed.fee(rprice * q, rate)
+            rcash[entity] += rprice * q
             return q
         key = (entity, pair.base)
         q = min(requested, s.ledger.get(entity, pair.base) - rsell[key])
@@ -222,35 +224,9 @@ class SkeletonEngine:
 
     # ---- phases ----
     def _clear_and_settle(self, pair: TradingPair, orders: list[Order]) -> tuple[int, dict, list]:
-        s = self.s
-        band = self._band_bps(pair)
-        mw = s.policy.get("min_wage", 0) if pair.kind is MarketKind.LABOR else 0
-        res = clear(pair.pair_id, orders, s.last_price[pair.pair_id], band_bps=band, min_wage=mw)
-        if res.q_star == 0:
-            return 0, {}, []
-        p = res.p_star
-        rate = self._fee_bps(pair)
-        lines: list[LedgerLine] = []
-        total_fee = 0
-        spend: dict = {}
-        fills_out: list = []
-        for f in res.fills:
-            cash_amt = p * f.qty
-            fee_amt = fixed.fee(cash_amt, rate)
-            total_fee += fee_amt
-            if f.side is Side.BUY:
-                lines.append(LedgerLine(f.entity_id, pair.base, f.qty))
-                lines.append(LedgerLine(f.entity_id, pair.quote, -(cash_amt + fee_amt)))
-                spend[f.entity_id] = spend.get(f.entity_id, 0) + cash_amt
-            else:
-                lines.append(LedgerLine(f.entity_id, pair.base, -f.qty))
-                lines.append(LedgerLine(f.entity_id, pair.quote, cash_amt - fee_amt))
-            fills_out.append((f.order_id, f.qty))
-        if total_fee > 0:
-            lines.append(LedgerLine(s.exch, pair.quote, total_fee))
-        s.ledger.post(s.tick, TurnPhase.P4, Cause.TRADE, lines)
-        s.last_price[pair.pair_id] = p
-        return p * res.q_star, spend, fills_out
+        """P4: clear one pair (no fees, no price band) with forced-liquidation re-auction, then
+        settle by double-entry (doc 09 9.3/9.6.4/§強制決済). Delegated to the margin engine."""
+        return self.margin.clear_and_settle(pair, orders)
 
     def _produce_all(self) -> None:
         """P5 PRODUCE: Leontief production, then capacity expansion, then depreciation (doc 10.8.2)."""

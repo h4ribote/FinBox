@@ -7,7 +7,7 @@ bid for food when hungry. Everyone quotes the last clearing price.
 from __future__ import annotations
 from dataclasses import dataclass
 
-from ..core.enums import OrderType, Side, TIF
+from ..core.enums import OrderType, PositionSide, Side, TIF, TradeMode
 from ..core.ids import AssetId, EntityId
 from ..domain.needs import SCALE as NEED_SCALE
 from ..market.types import TradingPair
@@ -24,6 +24,12 @@ class ProtoOrder:
     tif: TIF = TIF.GFT
     expires_tick: int | None = None     # GTT failure tick (doc 09 9.4.2)
     qty_visible: int | None = None      # iceberg visible slice (doc 09 9.4.4)
+    # margin (信用取引, doc 09): SPOT board orders ignore the fields below. A MARGIN order opens
+    # (intent=OPEN) or unwinds (intent=CLOSE) a leveraged Position; position_side picks LONG/SHORT.
+    trade_mode: TradeMode = TradeMode.SPOT
+    position_side: PositionSide | None = None
+    intent: str = "OPEN"                # OPEN | CLOSE
+    position_id: str | None = None      # target position for intent=CLOSE
 
 
 def _pair(store, base: AssetId) -> TradingPair:

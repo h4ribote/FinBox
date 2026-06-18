@@ -165,21 +165,32 @@ for country in countries:
 
 ### 3.3.5 P4 CLEAR (板寄せ清算・決済)
 
-- 入力: P2 で検証済みの注文 (労働・財・サービス・FX・債券・株式・国債入札)、P3 の発行枠・政策金利。
-- 処理: 全取引ペアについて板寄せアルゴリズムで単一約定価格を決定し、需給を約定させる。決済は共通台帳へ**二重仕訳**で反映 (用語集 0.9)。すべての自発的取引はこの経路を通る (用語集 0.10 市場決済)。
-- 出力: 約定 (`trade_id` 付)・清算価格 (各ペアの clearing price)・板の OHLC・未約定残注文の TIF 処理。
-- 台帳への影響: 現金と資産の移転 (借方=貸方)。手数料は `EXCH` が収受。残高が負になる遷移は不可 (用語集 0.17)。
-- 詳細: 板寄せアルゴリズム・注文種別・同点約定の決定論は [市場と取引](09-markets-and-trading.md)。価格表現は用語集 0.8。
+- 入力: P2 で検証済みの注文 (労働・財・サービス・FX・債券・株式・国債入札、信用ポジションの新規建て・決済注文、AMM の ladder 注文)、当ターン受理済みの貸借プール預入・引出要求、P3 の発行枠・政策金利。
+- 処理: まず貸借プールへの預入・引出を「預入 → 引出」の順で確定する (板寄せより前。引出は当ターン頭の利用可能残高の範囲で処理する。[09 §貸借プール](09-markets-and-trading.md))。次に全取引ペアについて板寄せアルゴリズムで単一約定価格を決定し、需給を約定させる。信用取引の新規建て (margin-open、借入は `LOAN` でプール→借り手へ先行移転) と AMM の ladder 注文は現物注文と同一の板で約定する。板寄せで予備清算価格 `p*_0` を得たのち、維持証拠金を割った信用ポジションが存在する場合は、エンジンが生成する非自発的決済注文 (ロング=成行 SELL / ショート=成行 BUY) を同じ板へ投入して再清算する強制決済 (forced liquidation) を、`liquidation_max_rounds` を上限に反復する。清算価格 `p*` には値幅制限を設けない (カスケードの抑制は決済数量のスロットルが担う。[09 §強制決済](09-markets-and-trading.md))。決済は共通台帳へ**二重仕訳**で反映 (用語集 0.9)。すべての自発的取引はこの経路を通る (用語集 0.10 市場決済)。
+- 出力: 約定 (`trade_id` 付)・清算価格 (各ペアの clearing price)・板の OHLC・未約定残注文の TIF 処理・信用ポジション (`Position`) の建て/縮小/消去・貸借プール残高の更新。
+- 台帳への影響: 現金と資産の移転 (借方=貸方)。1約定は base と quote の移転のみで構成し (買い手 −cash / 売り手 +cash、`cash = p* × qty`)、取引手数料は存在しない (`EXCH` は清算・決済のみを担う)。貸借プールの貸出 (`LOAN`)・返済 (`REPAY`)・清算ペナルティは実在アセットの移転として記帳する。残高が負になる遷移は不可 (用語集 0.17)。
+- 詳細: 板寄せアルゴリズム・注文種別・同点約定の決定論、信用取引・貸借プール・強制決済・AMM は [市場と取引](09-markets-and-trading.md)。価格表現は用語集 0.8。
 
 ```text
+apply_pool_deposits(validated, cause="POOL_SUPPLY")     # 板寄せより前: 預入 → 引出 (09 §貸借プール)
+apply_pool_withdrawals(validated, cause="POOL_WITHDRAW") # 引出は当ターン頭の available の範囲
+
 for pair in deterministic_pair_order(all_trading_pairs):
-    book = collect_orders(validated, pair)
-    p_clear = call_auction_price(book)          # 単一価格板寄せ (09 が定義)
+    book = collect_orders(validated, pair)      # 自発注文 + margin-open + AMM ladder
+    open_margin_loans(book, cause="LOAN")       # 新規建ての借入をプール→借り手へ先行移転 (09)
+    p_clear = call_auction_price(book)          # 予備清算 p*_0、単一価格板寄せ (09 が定義)、値幅制限なし
     fills   = match(book, p_clear)              # 同点はentity_id昇順 (09, 3.6)
     for f in fills:
-        ledger.transfer(f.buyer, f.seller, pair.base, f.qty, cause=f.trade_id)
-        ledger.transfer(f.seller, f.buyer, pair.quote, f.price * f.qty, cause=f.trade_id)
-        ledger.collect_fee(EXCH, f, fee_rate)   # ceil(cash * fee_rate)
+        ledger.transfer(f.seller, f.buyer, pair.base, f.qty, cause=f.trade_id)            # base を売り手→買い手
+        ledger.transfer(f.buyer, f.seller, pair.quote, f.price * f.qty, cause=f.trade_id) # 買い手 −cash / 売り手 +cash、手数料なし
+
+# 強制決済: 維持証拠金割れを非自発的決済注文で再清算、liquidation_max_rounds を上限に反復 (09 §強制決済)
+for _ in range(liquidation_max_rounds):
+    under = mark_and_select_underwater(positions, p_clear)   # margin_ratio < maintenance
+    if not under: break
+    liq_orders = make_liquidation_orders(under)              # ロング=成行SELL / ショート=成行BUY
+    p_clear = recall_auction_with(book, liq_orders)          # 同じ板へ投入し再清算、値幅制限なし
+    settle_and_penalize(under, cause="LIQUIDATION_PENALTY")  # 借入返済・ペナルティ→保険基金
 ```
 
 ### 3.3.6 P5 PRODUCE (生産)
@@ -220,7 +231,7 @@ resolve_births_deaths_migration(rng=subseed(tick, "demography"))
 ### 3.3.8 P7 FISCAL (財政・プロトコル移転)
 
 - 入力: P3 の確定政策 (税率・関税・補助金)、P4 の約定 (課税基礎)、債券台帳 (クーポン・償還)、株式 (配当)、中央銀行の操作方針。
-- 処理: ルールに基づく義務的移転 (用語集 0.10 プロトコル移転) を実行する。徴税 (所得/法人/消費)・関税徴収・国債/社債のクーポン支払と元本償還・株式配当・補助金/社会保障/失業給付の支給・中央銀行による通貨発行/吸収。クーポン・利息は単利按分 (3.2.1) で計算する。
+- 処理: ルールに基づく義務的移転 (用語集 0.10 プロトコル移転) を実行する。徴税 (所得/法人/消費)・関税徴収・国債/社債のクーポン支払と元本償還・株式配当・信用取引の借入利息 (貸借プールへの支払、`reserve_factor` 分は保険基金へ繰入)・補助金/社会保障/失業給付の支給・中央銀行による通貨発行/吸収。クーポン・利息は単利按分 (3.2.1) で計算する。
 - 出力: 政府・中央銀行・エンティティ間の現金移転、債券の償還消滅、配当支払。
 - 台帳への影響: プロトコル移転 (`transfer_id`/`mint_id`)。通貨の発行/吸収は中央銀行のみが行えるミント/バーン点 (用語集 0.10, 0.17)。
 - 詳細: 課税・関税・補助金は [政治と統治](12-politics-and-government.md)、クーポン・償還・配当・中央銀行操作は [金融と金融商品](11-finance-and-instruments.md)。
@@ -229,6 +240,7 @@ resolve_births_deaths_migration(rng=subseed(tick, "demography"))
 collect_taxes_and_tariffs(policy, trades_of_turn, cause=transfer_id)   # 12
 pay_coupons_and_redeem(bond_ledger, r_turn=r_annual/48, cause=transfer_id)  # 11, 単利按分
 pay_dividends(equity_ledger, cause=transfer_id)                        # 11
+pay_margin_interest(positions, lending_pools, cause="INTEREST")        # 09/11, 単利按分・reserve_factor分は保険基金へ
 disburse_subsidies_and_welfare(policy, cause=transfer_id)             # 12
 central_bank_operations(cb_policy, cause=mint_id)                     # 11, 通貨発行/吸収
 ```
@@ -306,6 +318,7 @@ stateDiagram-v2
 | 債券クーポン支払 | 四半期 | `is_quarter_end` | P7 FISCAL | [11](11-finance-and-instruments.md) |
 | 債券元本償還 (限月到来) | 四半期 | `is_quarter_end` | P7 FISCAL | [11](11-finance-and-instruments.md) |
 | 配当確定・支払 | 四半期 | `is_quarter_end` | P7 FISCAL | [11](11-finance-and-instruments.md) |
+| 信用取引の借入利息支払 | 毎ターン | (常時) | P7 FISCAL | [09](09-markets-and-trading.md), [11](11-finance-and-instruments.md) |
 | 法人税・所得税の確定 | 四半期 | `is_quarter_end` | P7 FISCAL | [12](12-politics-and-government.md) |
 | 消費税・関税の徴収 | 毎ターン | (常時) | P7 FISCAL | [12](12-politics-and-government.md) |
 | マクロ指標確定 (速報) | 毎ターン | (常時) | P9 ADVANCE | [11](11-finance-and-instruments.md), 0.16 |
@@ -370,7 +383,7 @@ def rng(tick, stream_id, *extra):
 - 企業走査順 (P5): `FIRM:<6桁>` の昇順。地域上限は地域単位で集計し、同一地域内の配分は企業ID昇順で逐次割当する (地域上限超過分は後続企業がクランプされる)。
 - エージェント走査順 (P6): `AGENT:<6桁>` / `PLAYER:<6桁>` の昇順。出生死亡等の個体判定は 3.6.1 の個体派生サブシードを用い、走査順への結果依存を排除する。
 - 政策集約走査順 (P3): 国コードの辞書順 (`ALD < BOR < CYR < DOR < ESM < FAR`)、国内の政治家は `entity_id` 昇順。
-- プロトコル移転順 (P7): 表 3.5 の行順 (徴税 → クーポン/償還 → 配当 → 補助金 → 中央銀行操作) を国コード昇順・エンティティID昇順で実行する。
+- プロトコル移転順 (P7): 表 3.5 の行順 (徴税 → クーポン/償還 → 配当 → 信用借入利息 → 補助金 → 中央銀行操作) を国コード昇順・エンティティID昇順で実行する。
 
 走査順は構成や乱数に依存せず、ID体系 (用語集 0.3, 0.4) から純粋に決まる。これがリプレイ・回帰テスト・分散実行 (CTDE) における再現性の基盤である。
 
@@ -391,13 +404,13 @@ sequenceDiagram
   Note over E: 窓口閉鎖 = 全員提出 or デッドライン
   E->>E: P2 VALIDATE 検証・クランプ (走査順固定)
   E->>E: P3 GOVERN 政策集約確定 (0.12)
-  E->>M: P4 CLEAR 板寄せ清算
-  M->>L: 約定を二重仕訳で決済
+  E->>M: P4 CLEAR プール預入/引出 → 板寄せ清算 (margin-open + AMM ladder) → 強制決済再清算
+  M->>L: 約定を二重仕訳で決済 (手数料なし、貸出/返済/清算ペナルティ含む)
   E->>L: P5 PRODUCE 生成/消滅 (build能力拡張)
   R-->>E: weather サブシード
   E->>L: P6 CONSUME 消費・ニーズ回復
   R-->>E: demography サブシード
-  E->>L: P7 FISCAL 徴税・クーポン・配当・補助金・CB操作
+  E->>L: P7 FISCAL 徴税・クーポン・配当・信用借入利息・補助金・CB操作
   E->>L: P8 MILITARY 軍需品消費・領土更新
   R-->>E: combat サブシード
   E->>E: P9 ADVANCE 指標確定・WUI評価・報酬・境界イベント
@@ -407,7 +420,7 @@ sequenceDiagram
 ## 3.9 相互リンク
 
 - 横断定義 (時間定数・パイプライン・集約規則・不変条件): [用語集と正準仕様](00-glossary.md)
-- P4 CLEAR の板寄せアルゴリズム・注文種別・同点約定: [市場と取引](09-markets-and-trading.md)
+- P4 CLEAR の板寄せアルゴリズム・注文種別・同点約定、信用取引・貸借プール・強制決済・AMM: [市場と取引](09-markets-and-trading.md)
 - P5 PRODUCE / P6 CONSUME のニーズ・生産・消費: [エージェント](05-agents.md), [産業と生産](10-industry-and-production.md)
 - P7 FISCAL / P8 MILITARY の財政・金融・軍事: [金融と金融商品](11-finance-and-instruments.md), [政治と統治](12-politics-and-government.md)
 - 提出窓口の構成値 (`time.turn_seconds` / `room.turn_seconds` / `submit_deadline_turns`)・再現性: [構成と初期化](16-configuration-and-initialization.md)

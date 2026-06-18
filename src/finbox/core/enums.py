@@ -53,6 +53,20 @@ def is_perishable(asset_id: str) -> bool:
     return ns in {CommNamespace.LABOR.value, CommNamespace.SVC.value}
 
 
+def is_margin_eligible_base(asset_id: str) -> bool:
+    """True iff ``asset_id`` is a margin-tradable base: CUR (FX), EQ (equity), or
+    storable COMM (commodity) (doc 09 9.x 信用取引, doc 00 0.5.3).
+
+    Perishable COMM (``labor.*``/``svc.*``/``energy.electricity``) cannot be carried to
+    the next turn for physical repayment, so it is spot-only. BOND/BILL/FUT are spot-only.
+    """
+    if asset_id.startswith("CUR:") or asset_id.startswith("EQ:"):
+        return True
+    if asset_id.startswith("COMM:"):
+        return not is_perishable(asset_id)
+    return False
+
+
 class LaborKind(str, Enum):
     """labor.* kinds = skill[k] index set (doc 00 0.5.2, doc 05 5.3)."""
     UNSKILLED = "unskilled"
@@ -103,6 +117,31 @@ class Side(str, Enum):
     SELL = "SELL"
 
 
+class TradeMode(str, Enum):
+    """Investor trade mode (doc 06 6.5/6.6): spot (no leverage) vs margin (信用取引)."""
+    SPOT = "SPOT"
+    MARGIN = "MARGIN"
+
+
+class InvestStyle(str, Enum):
+    """Investor strategy style (doc 06 6.6, doc 07 7.5.2)."""
+    FUNDAMENTAL = "FUNDAMENTAL"
+    TECHNICAL = "TECHNICAL"
+    YIELD = "YIELD"
+
+
+class PositionSide(str, Enum):
+    """Margin position direction (doc 15 15.6 Position, doc 09 信用取引)."""
+    LONG = "LONG"
+    SHORT = "SHORT"
+
+
+class AMMInvariant(str, Enum):
+    """Automated market-maker bonding curve (doc 09 9.7, doc 15 AMMPool)."""
+    CONST_PRODUCT = "CONST_PRODUCT"   # x·y=k, wide range (EQ/COMM)
+    CONCENTRATED = "CONCENTRATED"     # constant-sum-ish, tight near parity (FX)
+
+
 class MarketKind(str, Enum):
     """Market pair kinds (doc 15 15.7)."""
     LABOR = "LABOR"
@@ -120,6 +159,11 @@ class EntityKind(str, Enum):
     CENTRAL_BANK = "CENTRAL_BANK"
     PLAYER = "PLAYER"
     EXCHANGE = "EXCHANGE"
+    # protocol facilities that hold real balances (doc 09 信用取引, doc 15 15.6).
+    # Not roles; they are balance-holding clearing facilities like EXCH.
+    LENDING_POOL = "LENDING_POOL"
+    INSURANCE_FUND = "INSURANCE_FUND"
+    AMM_POOL = "AMM_POOL"
 
 
 class Role(str, Enum):
@@ -144,6 +188,11 @@ class Role(str, Enum):
     ENTREPRENEUR = "ENTREPRENEUR"
     INVESTOR = "INVESTOR"
     MARKET_MAKER = "MARKET_MAKER"
+    # INVESTOR-derived specializations (doc 06 6.6): trade_mode × style plus liquidity roles.
+    # These are role tags layered on INVESTOR (not new entity kinds, doc 00 0.4/0.14).
+    YIELD_INVESTOR = "YIELD_INVESTOR"   # style=YIELD: harvests income/carry
+    ARBITRAGEUR = "ARBITRAGEUR"         # cross-market / cross-rate arbitrage
+    AMM = "AMM"                         # passive automated market maker (LP)
     # public
     POLITICIAN = "POLITICIAN"
     CENTRAL_BANKER = "CENTRAL_BANKER"
@@ -219,6 +268,16 @@ class Cause(str, Enum):
     LIQUIDATION = "LIQUIDATION"
     GENESIS = "GENESIS"        # initial endowment (P-init)
     EXPIRE = "EXPIRE"          # P9 perishable expiry burn (doc 08 8.9.4)
+    # margin / lending facility transfers (doc 09 信用取引) — all conserving real-asset moves
+    POOL_SUPPLY = "POOL_SUPPLY"          # supplier -> lending pool (deposit, mint pool share)
+    POOL_WITHDRAW = "POOL_WITHDRAW"      # lending pool -> supplier (redeem pool share)
+    LOAN = "LOAN"                        # lending pool -> borrower (margin borrow), loan_id ref
+    REPAY = "REPAY"                      # borrower -> lending pool (principal repayment)
+    INTEREST = "INTEREST"                # borrower -> suppliers + insurance (redistribution, doc 00 0.10)
+    LIQUIDATION_PENALTY = "LIQUIDATION_PENALTY"  # forced-liq penalty: collateral -> insurance
+    HAIRCUT = "HAIRCUT"                  # insurance/supplier absorbs bad debt (equity<0)
+    AMM_SUPPLY = "AMM_SUPPLY"            # LP -> AMM pool reserves (mint LP share)
+    AMM_WITHDRAW = "AMM_WITHDRAW"        # AMM pool reserves -> LP (redeem LP share)
 
 
 # Causes that may change an asset's total supply (mint/burn points, doc 00 0.10/0.17).

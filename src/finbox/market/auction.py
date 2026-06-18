@@ -1,18 +1,19 @@
 """Single-price call auction / itayose (doc 09 9.3).
 
 Deterministic clearing: maximize volume, then minimize imbalance, then nearest to
-reference price, then a price-pressure tiebreak (9.3.3). The result price is then
-clamped by the circuit-breaker band (9.8.3) and, for labor pairs, floored at
-min_wage (9.3.7). The short side fills fully; the long side is allocated by
-price -> time priority, with pro-rata (largest-remainder) at the single boundary
-level (9.6.2). FOK orders never move p* and are judged after it is fixed (9.4.3).
+reference price, then a price-pressure tiebreak (9.3.3). For labor pairs the result
+is floored at min_wage (9.3.7); there is no price-band / circuit-breaker clamp — the
+clearing price is the volume-maximizing value with no bound on its distance from the
+reference (doc 09, "値幅制限の撤廃"). The short side fills fully; the long side is
+allocated by price -> time priority, with pro-rata (largest-remainder) at the single
+boundary level (9.6.2). FOK orders never move p* and are judged after it is fixed (9.4.3).
 """
 from __future__ import annotations
 from collections.abc import Sequence
 from itertools import groupby
 
 from ..core.enums import OrderType, Side
-from ..core.fixed import ceildiv, clamp, largest_remainder
+from ..core.fixed import largest_remainder
 from .types import ClearResult, Fill, Order
 
 
@@ -103,8 +104,8 @@ def _judge_fok(foks: Sequence[Order], p_star: int, buys: Sequence[Order],
 
 
 def clear(pair_id: str, orders: Sequence[Order], p_ref: int,
-          band_bps: int = 0, min_wage: int = 0) -> ClearResult:
-    """Compute the single clearing price and fills for one pair (doc 09 9.3/9.8.3/9.3.7)."""
+          min_wage: int = 0) -> ClearResult:
+    """Compute the single clearing price and fills for one pair (doc 09 9.3/9.3.7)."""
     # FOK orders do not participate in price formation (doc 09 9.4.3)
     price_orders = [o for o in orders if o.order_type is not OrderType.FOK]
     fok_orders = [o for o in orders if o.order_type is OrderType.FOK]
@@ -126,14 +127,8 @@ def clear(pair_id: str, orders: Sequence[Order], p_ref: int,
             best_key, best_p = key, p
     p_star = best_p if best_p is not None else p_ref
 
-    # circuit breaker (doc 09 9.8.3): clamp p* into the band around p_ref
-    lo_band = p_ref
-    if band_bps > 0:
-        lo_band = (p_ref * (10000 - band_bps)) // 10000
-        hi_band = ceildiv(p_ref * (10000 + band_bps), 10000)
-        p_star = clamp(p_star, lo_band, hi_band)
-    # labor min_wage floor (doc 09 9.3.7), applied after the breaker (floor only strengthens
-    # the lower bound): lower bound = max(min_wage, floor(p_ref*(1-band)))
+    # labor min_wage floor (doc 09 9.3.7): a political lower bound on the wage, not a
+    # price-band clamp. Excess supply above the floor goes unfilled (= unemployment).
     if min_wage > 0 and p_star < min_wage:
         p_star = min_wage
 

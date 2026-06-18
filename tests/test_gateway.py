@@ -101,6 +101,64 @@ def test_insufficient_balance_preflight_rejects():
     assert res["rejected"][0]["code"] == "insufficient_balance"   # holds 0 of that equity
 
 
+def _eq(store):
+    return next(iter(p for p in store.pairs if p.startswith("EQ:")))
+
+
+def test_margin_order_accepted_for_investor():
+    gw = make_gateway()
+    _, token = _session(gw)                            # INVESTOR is margin-capable, allow_margin default
+    eq = _eq(gw.store)
+    o = _order(eq, "BUY", 5, gw.store.last_price[eq])
+    o.trade_mode, o.position_side, o.intent, o.position_id = "MARGIN", "LONG", "OPEN", None
+    res = gw.submit_orders(token, [o])
+    assert res["accepted"] and not res["rejected"]
+
+
+def test_margin_rejected_when_disabled():
+    gw = make_gateway(allow_margin=False)
+    _, token = _session(gw)
+    eq = _eq(gw.store)
+    o = _order(eq, "BUY", 5, gw.store.last_price[eq])
+    o.trade_mode, o.position_side, o.intent, o.position_id = "MARGIN", "LONG", "OPEN", None
+    res = gw.submit_orders(token, [o])
+    assert res["rejected"][0]["code"] == "role_not_permitted"
+
+
+def test_margin_rejected_on_ineligible_pair():
+    gw = make_gateway()
+    _, token = _session(gw)
+    bond = next(iter(p for p in gw.store.pairs if p.startswith("BOND:")))
+    o = _order(bond, "BUY", 1, gw.store.last_price[bond])
+    o.trade_mode, o.position_side, o.intent, o.position_id = "MARGIN", "LONG", "OPEN", None
+    res = gw.submit_orders(token, [o])
+    assert res["rejected"][0]["code"] == "validation_failed"   # bonds are spot-only
+
+
+def test_lending_deposit_queues_and_applies():
+    gw = make_gateway()
+    ent, token = _session(gw)
+    cur = str(gw.store.cur)
+    pool = gw.store.lending_pools[cur]
+    supplied0 = pool.supplied
+    gw.lending_op(token, "SUPPLY", cur, 100000)
+    assert gw.store.pending_pool_ops and gw.store.cash(ent) == gw.config.investor_start_cash
+    gw.step()                                          # P4-pre applies the deposit
+    assert pool.supplied == supplied0 + 100000
+    assert pool.shares.get(ent, 0) > 0
+    assert not gw.store.pending_pool_ops
+
+
+def test_portfolio_exposes_positions_and_lending_state():
+    gw = make_gateway()
+    _, token = _session(gw)
+    pf = gw.portfolio(token)
+    assert "positions" in pf and pf["positions"] == []   # no margin positions yet
+    st = gw.public_state()
+    assert "lending_pools" in st and "insurance" in st and "amm_pools" in st
+    assert any(p["asset_id"] == str(gw.store.cur) for p in st["lending_pools"])
+
+
 def test_role_gating_blocks_player_from_voting():
     gw = make_gateway()
     _, token = _session(gw)                            # INVESTOR: no govern scope

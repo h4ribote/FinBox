@@ -32,17 +32,50 @@ class SkeletonConfig:
     master_seed: int = 0xF1B0C0DE
     n_agents: int = 6
 
-    # market / fiscal
-    fee_rate_bps: int = 5
-    fx_fee_rate_bps: int = 2             # doc 09 9.2.4/9.6.1 FX pairs (both base/quote CUR)
+    # market / fiscal. There are NO trading fees and NO price-band / circuit-breaker clamps:
+    # both are fully removed from all markets (doc 09 "値幅制限の撤廃", doc 00 0.8/0.20).
     consumption_tax_bps: int = 800
-    # circuit-breaker price bands by market kind, in bps (doc 09 9.8.3; default enabled)
-    price_band_fx_bps: int = 500
-    price_band_commodity_bps: int = 1500
-    price_band_equity_bps: int = 2000
-    price_band_bond_bps: int = 500
     iceberg_enabled: bool = False        # doc 09 9.4.4
     max_orders_per_turn: int = 256       # doc 13 13.6 (AI/human common)
+
+    # margin trading (信用取引, doc 09 §証拠金 / doc 16 margin.*)
+    initial_margin_bps: int = 2000       # 20% => max 5x leverage on new/added positions
+    maint_margin_fx_bps: int = 1000      # maintenance margin by class (initial > maintenance)
+    maint_margin_comm_bps: int = 1200
+    maint_margin_equity_bps: int = 1500
+    liquidation_penalty_bps: int = 100   # forced-liq penalty on notional -> insurance fund
+    close_factor_bps: int = 5000         # max fraction of a position closed per liq round
+    liquidation_max_rounds: int = 4      # cascade cap inside one P4 (deterministic stop)
+
+    # lending pool utilization curve (doc 09 §利用率連動金利 / doc 16 lending.*)
+    lending_asset_base_rate_bps: int = 200   # asset-pool base rate (CUR pools track policy_rate)
+    lending_slope1_bps: int = 400
+    lending_slope2_bps: int = 6000
+    lending_u_kink_bps: int = 8000           # 80% kink
+    lending_reserve_factor_bps: int = 1000   # 10% interest spread -> insurance fund
+    lending_genesis_supply_cur: int = 2_000_000   # genesis seed of the home-currency pool
+
+    # insurance fund (doc 09 §不良債権の吸収 / doc 16 insurance.*)
+    insurance_genesis_seed: int = 1_000_000  # genesis first-loss buffer (home currency)
+
+    # AMM (doc 09 9.7 / doc 16 amm.*). Off by default; LP supply opt-in like iceberg.
+    amm_enabled: bool = False
+    amm_spread_fx_bps: int = 10
+    amm_spread_equity_bps: int = 50
+    amm_spread_comm_bps: int = 30
+    amm_ladder_levels: int = 8
+    amm_genesis_seed: int = 1_000_000        # per-pair quote reserve when AMM is enabled
+    arb_deviation_threshold_bps: int = 50    # ARBITRAGEUR no-arb band (doc 09 §ARBITRAGEUR)
+
+    # YIELD_INVESTOR reward coefficients (doc 07 §7.5.2 / doc 16 16.15.5); w_impair >> w_income
+    w_income_bps: int = 10000
+    w_impair_bps: int = 30000
+    w_stab_bps: int = 2000
+    w_dd_bps: int = 5000
+
+    # role permissions (doc 06 6.5/6.6, doc 13 13.5)
+    allow_margin: bool = True            # players/agents may open margin positions
+    allow_amm: bool = False              # AMM role is AI-only by default (continuous operation)
 
     # reference prices (minor units) -- doc 16 16.15.1 canonical genesis reference prices
     food_ref_price: int = 2400

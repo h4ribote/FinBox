@@ -2,12 +2,22 @@
 from finbox.core import fixed
 
 
-def test_fee_ceil():
-    # doc 08 8.6.1 example: cash=50, fee_rate 1% (100 bps) -> fee = 1
-    assert fixed.fee(50, 100) == 1
-    assert fixed.fee(0, 5) == 0
-    assert fixed.fee(100, 5) == 1          # ceil(0.05) = 1
-    assert fixed.fee(20000, 5) == 10       # ceil(10.0) = 10
+def test_no_trade_fee_helper():
+    # trading fees are fully removed (doc 09 9.6.1, doc 00 0.8/0.20): no fee() helper exists
+    assert not hasattr(fixed, "fee")
+
+
+def test_lending_borrow_rate_kink():
+    # kinked utilization curve (doc 09 §利用率連動金利): base 250, slope1 400, slope2 6000, kink 8000
+    assert fixed.borrow_rate_bps(0, 250, 400, 6000, 8000) == 250          # U=0 -> base only
+    assert fixed.borrow_rate_bps(8000, 250, 400, 6000, 8000) == 250 + 320  # at the kink (8000*400/1e4)
+    # above the kink the steep slope2 applies to the excess utilization
+    assert fixed.borrow_rate_bps(9000, 250, 400, 6000, 8000) == 250 + 320 + (1000 * 6000) // 10000
+
+
+def test_lending_supply_rate():
+    # supply_rate = floor(borrow_rate · U · (1 − reserve_factor)); reserve spread -> insurance
+    assert fixed.supply_rate_bps(570, 8000, 1000) == (570 * 8000 // 10000) * 9000 // 10000
 
 
 def test_apply_bps_floor():

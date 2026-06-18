@@ -78,7 +78,10 @@ flowchart TD
 | 政府 (Government) | `GOV:<country_code>` | `GOV:ALD` | 国家財政・国債発行・徴税・軍事の主体。政治家集団が統治 |
 | 中央銀行 (Central Bank) | `CB:<country_code>` | `CB:ALD` | 通貨の発行・吸収と政策金利の執行を担う制度的主体 |
 | プレイヤー (Player) | `PLAYER:<6桁>` | `PLAYER:000007` | 人間プレイヤーの口座。投資家ロールで参加 |
-| 取引所/清算機関 (Exchange) | `EXCH` | `EXCH` | 板寄せ清算と決済を担うシングルトン。手数料の収受主体でもある |
+| 取引所/清算機関 (Exchange) | `EXCH` | `EXCH` | 板寄せ清算と決済のみを担うシングルトン (手数料は存在せず徴収しない。約定は買い手 −現金 / 売り手 +現金 のみ) |
+| 貸借プール (Lending Pool) | `POOL:<asset_id>` | `POOL:CUR:ALD`, `POOL:EQ:firm.000042` | 信用取引の借入原資を供給する per-asset プール。信用対象アセットごとに1つ。実在残高を保持する (`09-markets-and-trading.md`, `15-data-model.md`) |
+| 保険基金 (Insurance Fund) | `INSF:<country_code>` | `INSF:ALD` | 不良債権を吸収する first-loss バッファ。通貨ごとに1つ。清算ペナルティ・金利スプレッドで積み上がる実在資産集合 |
+| AMM プール (AMM Pool) | `AMM:<pair_id>` | `AMM:EQ:firm.000042/CUR:ALD` | 決定論的価格カーブで受動的に流動性を供給する自動マーケットメイカー。取引ペアごとに1つ。実在準備金を保持する |
 
 ```mermaid
 flowchart LR
@@ -95,7 +98,7 @@ flowchart LR
   FIRM -->|株式公開/社債| EXCH
 ```
 
-- マーケットメイカーは独立のエンティティ種別ではなく、ロール `MARKET_MAKER` を持つ `AGENT` である (0.11)。
+- マーケットメイカーは独立のエンティティ種別ではなく、ロール `MARKET_MAKER` を持つ `AGENT` である (0.11)。同様に `YIELD_INVESTOR`/`ARBITRAGEUR`/`AMM` は `INVESTOR` から派生する特化ロールであって新たなエンティティ種別ではない (0.14)。一方で `LENDING_POOL`(`POOL:<asset_id>`)・`INSURANCE_FUND`(`INSF:<cc>`)・`AMM_POOL`(`AMM:<pair_id>`) は実在残高を持つ制度的エンティティ種別であり、ロール `AMM` (受動的に `AMM_POOL` を運用する投資家派生ロール) とは区別される。
 - プレイヤーとエージェントは台帳上は対等で、どちらも `entity_id` で残高を持ち、同じ注文・行動を提出できる。
 
 ## 0.5 Tradable Assets の分類と資産ID (Asset IDs)
@@ -165,13 +168,12 @@ flowchart LR
 
 - すべての資産数量 `quantity` は非負整数。
 - 価格 `price` は「`quote` 通貨の最小単位 / `base` 1単位」を表す整数 (price tick)。最小単位は通貨ごとに構成で定義する (`16`)。
-- 約定1件の現金移動額は `cash = price × quantity`(厳密な整数)。端数は発生しない。
-- 取引手数料 (任意) は `EXCH` が収受し、`fee = ceil(cash × fee_rate)` の整数で控除する。
+- 約定1件の現金移動額は `cash = price × quantity`(厳密な整数)。端数は発生しない。取引手数料は存在しない。約定は `base`/`quote` の純粋な二重仕訳であり、買い手は `cash` 減・`base` 増、売り手は `cash` 増・`base` 減のみで完結する (手数料の控除行はない)。徴税・関税・福祉・クーポン・配当・利息など非取引の義務的移転 (プロトコル移転 0.10) はこの限りではなく存続する。
 - **表示整形**: 人間可読の通貨表示は内部整数 (minor 単位) を `minor_unit`(既定 1000) で除し、小数 `log10(minor_unit)=3` 桁＋3桁区切りで描画する提示専用処理である (例 内部 `1500000000` → `1,500,000.000`)。台帳・価格・決済・観測・決定論はすべて整数 minor 単位のままで、表示整形には一切依存しない (詳細は `16-configuration-and-initialization.md` §16.3.1、丸めの正準は 0.20)。
 
 ## 0.9 共通台帳 (Common Ledger)
 
-- 台帳は `balance[entity_id][asset_id] = 非負整数` を保持する。残高が負になる遷移は禁止 (空売りは金融商品の負債計上で表現し、現物残高は負にしない)。
+- 台帳は `balance[entity_id][asset_id] = 非負整数` を保持する。残高が負になる遷移は禁止 (信用取引のショートは貸借プールからの借入 + 信用ポジション `Position` の負債計上で表現し、現物残高は負にしない。`09-markets-and-trading.md`, `15-data-model.md`)。
 - すべての残高変動は**二重仕訳**で記録する。1件の移転 (transfer) は、ある資産について借方合計と貸方合計が一致する。資産ごとの総量はミント/バーン点 (0.10) を除き保存される。
 - すべての台帳変動は原因識別子 (`trade_id` / `production_id` / `transfer_id` / `mint_id`) を持ち、監査可能 (`08-economy-and-ledger.md`, `15-data-model.md`)。
 
@@ -252,8 +254,9 @@ flowchart LR
 `AGENT`/`PLAYER` は1つ以上のロールを持つ。ロールは許可される行動 (role-gating) と報酬関数 (`07`) を規定する。詳細は `06-roles.md`。
 
 - **労働者系 (households/labor)**: `FARMER`, `MINER`, `BUILDER`, `FACTORY_WORKER`, `SERVICE_WORKER`, `OFFICE_WORKER`, `LOGISTICS_WORKER`, `ENGINEER`, `HEALTHCARE_WORKER`, `TEACHER`, `RESEARCHER`, `SOLDIER`, `STUDENT`, `UNEMPLOYED`, `RETIREE`。各々が対応する `COMM:labor.*` を生産・販売する。
-- **資本・経営系**: `ENTREPRENEUR`(経営者・企業設立運営), `INVESTOR`(投資家), `MARKET_MAKER`(マーケットメイカー、投資家から派生)。
+- **資本・経営系**: `ENTREPRENEUR`(経営者・企業設立運営), `INVESTOR`(投資家), `MARKET_MAKER`(マーケットメイカー、投資家から派生), `YIELD_INVESTOR`(利回り重視投資家、投資家から派生), `ARBITRAGEUR`(裁定特化、投資家から派生), `AMM`(自動マーケットメイカー、投資家から派生)。
 - **公共系**: `POLITICIAN`(政治家), `CENTRAL_BANKER`(中央銀行家・政策執行), `BUREAUCRAT`(官僚・財政執行), `GENERAL`(将官・軍事指揮), `DIPLOMAT`(外交・任意)。
+- **`INVESTOR` 派生ロールとロール軸**: `MARKET_MAKER`/`YIELD_INVESTOR`/`ARBITRAGEUR`/`AMM` はいずれも `INVESTOR` から派生する特化ロールであり、独立のエンティティ種別ではない (0.4)。投資家は2軸で細分化される。取引モード `trade_mode ∈ {SPOT, MARGIN}`(列挙 `TradeMode`、0.21) が role-gating を、投資スタイル `style ∈ {FUNDAMENTAL, TECHNICAL, YIELD}`(列挙 `InvestStyle`、0.21) が観測サブセットと報酬シェーピングを切り替える。`YIELD_INVESTOR` は `style = YIELD` に対応する派生ロールである。`MARGIN` の許可は信用取引能力 (`allow_margin`) と証拠金要件にゲートされ、信用可能なロールは {`INVESTOR`, `YIELD_INVESTOR`, `ARBITRAGEUR`, `MARKET_MAKER`} とする (`06-roles.md`, `09-markets-and-trading.md`)。`AMM` は決定論的カーブで受動運用する既定AI専用ロールであり、対応する制度的エンティティ `AMM_POOL`(`AMM:<pair_id>`、0.4) を運用する。
 - **プレイヤー対象**: 人間プレイヤーは既定で `INVESTOR` として参加し、構成により `ENTREPRENEUR` も解禁できる。`POLITICIAN` 等の公共ロールは既定でAI専用 (`13-players-and-multiplayer.md`)。
 
 ## 0.15 産業分類 (Industry Taxonomy)
@@ -303,14 +306,58 @@ flowchart LR
 
 | 用途 | 丸め | 補足 |
 | --- | --- | --- |
-| 取引手数料 `fee` | `ceil` | `fee = ceil(cash × fee_rate_bps / 10000)` (0.8, `09-markets-and-trading.md`) |
 | 税・関税・補助金・福祉給付 | `floor` | 納税者有利。`floor(base × rate_bps / 10000)` (`12-politics-and-government.md`) |
 | 利息・クーポン・単利按分 | `floor` | 端数は発行体が吸収し資産ごとの借方=貸方を厳守 (`03-time-and-turns.md`, `08-economy-and-ledger.md`, `11-finance-and-instruments.md`) |
+| 貸借プール金利・供給金利 | `floor` | `supply_rate = floor(borrow_rate × U/10000 × (10000−reserve_factor)/10000)`、借入利息=単利按分に同じ (`09-markets-and-trading.md`, `11-finance-and-instruments.md`) |
+| 清算ペナルティ | `floor` | `floor(closed_notional × liquidation_penalty_bps / 10000)`。徴収して保険基金へ繰入 (`09-markets-and-trading.md`) |
+| 供給者ヘアカット | `largest-remainder` (Hamilton) | 不良債権残余を供給者持分按分で配賦。端数同点は `entity_id` 昇順 (`09-markets-and-trading.md`) |
 | 1株あたり配当 | `floor` | 端数は発行体 (企業) に留保 (`11-finance-and-instruments.md`) |
 | SCALAR 政策集約の tick 丸め | `round` (round-half-up, `.5` 切り上げ) | クランプを先に行い、その後 tick へ丸める (`clamp` → `round_to_tick`、0.12, `12-politics-and-government.md`) |
 | ALLOCATION・比例配分の整数化 | `largest-remainder` (Hamilton) | 端数同点は配分先キーの昇順 (`entity_id` / `cell_id` / 次元 index)。合計を厳密に保存 (`10-industry-and-production.md`, `12-politics-and-government.md`) |
 | ニーズ等の固定小数 (×1000) 変換 | `floor` | 状態は整数で保持 (`05-agents.md`) |
 
 - **クーポンの按分と頻度**: 利付債のクーポンは四半期境界 (P7, 3.5) で `coupon = floor(q × face × coupon_bps / 10000 / 4)` を一括支払する (年率の四半期按分=単利、0.7。`/4` は1年=4四半期)。ファシリティ・借入利息は毎ターン `floor(Pr × r_annual_bps / 10000 / TURNS_PER_YEAR)` で発生する (`11-finance-and-instruments.md`)。いずれも `floor` で整数化し、按分残差は発行体側に集約して借方=貸方を保つ。
-- **表示・評価専用の派生値** (YTM・現在価値・mark price・mid 気配・各種指数) は台帳移転ではないため本表の対象外であり、各ドキュメントが表示丸めを定める。ただし台帳へ移転される金額 (利払・配当・税・手数料) は必ず本表に従う。
+- **表示・評価専用の派生値** (YTM・現在価値・mark price・mid 気配・`margin_ratio`・利用率・各種指数) は台帳移転ではないため本表の対象外であり、各ドキュメントが表示丸めを定める。ただし台帳へ移転される金額 (利払・配当・税・利息・清算ペナルティ・ヘアカット) は必ず本表に従う。
 - **人間可読の通貨表示** (フロントエンド) は本表の整数丸めとは独立した提示専用の整形であり、台帳・観測・決定論には一切影響しない (0.8 の `unit_scale`、表示整形の詳細は `16-configuration-and-initialization.md`)。
+
+## 0.21 信用取引・流動性供給の列挙値 (Trading & Liquidity Enums)
+
+信用取引・投資家細分化・自動マーケットメイカーに用いる列挙値を本書の唯一の正準とする。各ドキュメント (`06`/`07`/`09`/`14`/`15`/`16`) は別名や独自集合を定義しない。
+
+- **`TradeMode`**: `SPOT`(現物)、`MARGIN`(信用)。投資家の取引モード軸 (0.14)。`MARGIN` は証拠金・貸借プール・強制決済の対象であり `allow_margin` でゲートされる。
+- **`InvestStyle`**: `FUNDAMENTAL`(本源的価値の平均回帰でキャピタルゲインを狙う)、`TECHNICAL`(価格パターン・モメンタム・出来高でキャピタルゲインを狙う)、`YIELD`(価格変動に賭けず経常キャッシュフロー=インカム/キャリーを収穫し元本保全を重視)。投資スタイル軸 (0.14)。
+- **`PositionSide`**: `LONG`(買い建て)、`SHORT`(売り建て)。信用ポジション `Position` の建玉方向。
+- **`AMMInvariant`**: `CONST_PRODUCT`(定数積、ボラの高い `EQ`/`COMM` 向けの広レンジ)、`CONCENTRATED`(集中型=定数和寄り、パリティ近傍の FX 向けの狭レンジ)。`AMM_POOL` の価格カーブの不変量 (`amm.invariant[class]`、`16`)。
+
+## 0.22 原因コード (Cause Codes)
+
+すべての台帳変動は原因識別子 (`trade_id` / `production_id` / `transfer_id` / `mint_id`) を持つ (0.9)。プロトコル移転 (0.10) と信用取引・貸借・自動マーケットメイカーに伴う移転は、原因の種別を表す `Cause` で分類する。信用取引・貸借・AMM に伴う以下の `Cause` はすべて**保存的 (CONSERVING)** であり、実在アセットの再配分のみを行う。**ミント/バーン点 (0.10/0.17) ではなく、いかなる場合も資産を創出/消滅させない**(資産保存の例外は中央銀行の通貨発行/吸収のみで、本表の追加は保存集合を一切拡張しない)。
+
+| `Cause` | 説明 | 保存性 |
+| --- | --- | --- |
+| `POOL_SUPPLY` | 供給者が貸借プールへアセットを預入 (pool share を受領) | CONSERVING |
+| `POOL_WITHDRAW` | 供給者が貸借プールから持分按分でアセットを引出 | CONSERVING |
+| `LOAN` | 貸借プールから借り手へアセットを貸出 (`loan_id` を `cause_ref` とする移転) | CONSERVING |
+| `REPAY` | 借り手が貸借プールへ借入アセットを返済 | CONSERVING |
+| `INTEREST` | 借り手→プール/保険基金への利息支払 (P7 FISCAL) | CONSERVING |
+| `LIQUIDATION_PENALTY` | 強制決済された名目に対する清算ペナルティ→保険基金 | CONSERVING |
+| `HAIRCUT` | 不良債権の残余を保険基金または供給者持分へ劣後配賦 | CONSERVING |
+| `AMM_SUPPLY` | LP が `AMM_POOL` の準備金へ `base`+`quote` を預入 | CONSERVING |
+| `AMM_WITHDRAW` | LP が `AMM_POOL` の準備金から持分按分で引出 | CONSERVING |
+
+- これらの `Cause` は二重仕訳 (0.9) で記帳され、移転元と移転先で資産ごとの借方=貸方を厳守する。`liquidation_id` は強制決済の決済注文・ペナルティ・ヘアカットの `cause_ref` として流れる。
+- 既存のミント/バーン点 (0.10 の「中央銀行による通貨の発行/吸収」「生産による生成/消滅」「債券/株式の発行/償還・買戻/清算」) は不変である。本節の追加列挙はそのいずれにも該当しない。
+
+## 0.23 信用取引と貸借の用語 (Margin & Lending Terms)
+
+信用取引・貸借プール・保険基金・自動マーケットメイカーに固有の正準IDと用語を定義する。詳細は `09-markets-and-trading.md`・`15-data-model.md`・`16-configuration-and-initialization.md`。
+
+- **信用取引 (margin trading)**: 自己証拠金を担保に貸借プールからアセットを借りて建てる取引。`CUR/CUR`(FX)・`EQ/CUR`(株式)・`COMM/CUR`(コモディティ) の3市場のみ対象とし、それ以外は現物 (`SPOT`) のみ。従来の「空売り」はすべて信用取引のショート (`PositionSide.SHORT`) に統合する (0.9、現物残高は負にしない)。
+- **信用対象アセット (margin-eligible asset)**: `base` が `CUR`(FX)・`EQ`・storable な `COMM` のいずれかであるペアに限る。perishable な `COMM`(`labor.*`/`svc.*`/`energy.electricity`、0.5.3) は繰越不能 (翌ターン以降に現物で返済できない) ため貸借の対象外であり、`BOND`/`BILL`・労働市場は現物専用。これは 0.5.3 の storable/perishable 区分が信用適格性を律することを意味する (信用可能=`CUR` ∨ `EQ` ∨ storable `COMM`)。
+- **`Position`(信用ポジション)**: ID `POS:NNNNNN`(単調増加・ゼロ埋め6桁)。建玉の方向 (`PositionSide`)・数量・建値・借入アセット/数量・担保アセット/数量・既経過利息を保持する正準スキーマ (`15-data-model.md`)。
+- **レバレッジ (leverage)**: 「ポジション名目 / 自己証拠金」。最大5倍。
+- **初期証拠金 (initial margin)**: 新規建て・増し建てに要求する証拠金率 `initial_margin = 2000 bps`(=20%、5倍)。P2 VALIDATE で `margin_ratio ≥ initial_margin` を要求し、満たさない数量はクランプする (`09-markets-and-trading.md`)。
+- **維持証拠金 (maintenance margin)**: ポジション維持に要求する下限証拠金率。資産クラス別に初期証拠金未満で定める (FX `1000 bps`、コモディティ `1200 bps`、株式 `1500 bps`)。`margin_ratio < maintenance margin` のポジションは強制決済対象。略語 `MM` は本書ではマーケットメイカー (0.18) を指すため、維持証拠金は省略せず「維持証拠金 / maintenance margin」と綴る。
+- **強制決済 (forced liquidation)**: 維持証拠金を割ったポジションを P4 CLEAR 内でエンジン生成の非自発注文 (`LONG`→成行 SELL / `SHORT`→成行 BUY) により決済し再清算する機構。ID `LIQ:NNNNNN`(単調増加・ゼロ埋め6桁)。価格に値幅制限は設けず、カスケードは数量スロットル (`close_factor`・`liquidation_max_rounds`) で律速する (`09-markets-and-trading.md`)。
+- **貸借プール (lending pool)**: 信用取引の借入原資を供給する per-asset の制度的エンティティ `POOL:<asset_id>`(0.4)。利用率連動金利で需給を均衡させる。供給=`POOL_SUPPLY`、引出=`POOL_WITHDRAW`、貸出=`LOAN`、返済=`REPAY`(0.22)。
+- **保険基金 (insurance fund)**: 不良債権を吸収する first-loss バッファ `INSF:<country_code>`(0.4)。清算ペナルティ (`LIQUIDATION_PENALTY`) と金利スプレッド (`reserve_factor` 分) で積み上がり、不足時のみ供給者ヘアカット (`HAIRCUT`) へ劣後する。いずれも実在アセットの移転で保存則を破らない。

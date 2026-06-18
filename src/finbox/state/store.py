@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from ..core.enums import MarketKind
 from ..core.ids import AssetId, EntityId
 from ..domain.finance import Bond, Equity
+from ..domain.margin import LendingPool
 from ..domain.production import FirmState
 from ..ledger import Ledger
 from ..market.types import TradingPair
@@ -56,6 +57,15 @@ class StateStore:
     equities: tuple[Equity, ...] = ()
     cb_policy_rate_bps: int = 0
     paid_in_capital: dict = field(default_factory=dict)   # firm -> paid-in capital (doc 11 11.6.2)
+    # margin trading (信用取引, doc 09 / doc 15 15.6)
+    positions: list = field(default_factory=list)          # list[Position] (open margin positions)
+    position_seq: int = 0                                  # monotonic position-id counter
+    lending_pools: dict = field(default_factory=dict)      # asset_id str -> LendingPool
+    amm_pools: dict = field(default_factory=dict)          # pair_id -> AMMPool
+    insurance: dict = field(default_factory=dict)          # currency asset_id str -> INSF entity id
+    liq_seq: int = 0                                       # monotonic liquidation-id counter
+    # queued lending-pool deposits/withdrawals, applied at P4 start before board-clearing (doc 09)
+    pending_pool_ops: list = field(default_factory=list)   # [{kind, entity, asset, qty}]
     # politics (M6)
     politicians: tuple[EntityId, ...] = ()
     policy: dict[str, int] = field(default_factory=dict)   # e.g. tax_bps, welfare_bps, min_wage
@@ -89,11 +99,31 @@ class StateStore:
         """Pairs in canonical (pair_id lexicographic) clearing order (doc 03 3.7)."""
         return [self.pairs[k] for k in sorted(self.pairs)]
 
-    def net_worth(self, e: EntityId) -> int:
-        """NAV (doc 08 8.8.1 / doc 11 11.9.2): mark every position at the last board-clearing
-        price (face/par only as the genesis fallback before any trade).
+    def mark_price(self, asset: AssetId | str) -> int:
+        """Last board-clearing price of ``asset`` in CUR (1 for the home currency itself)."""
+        if asset == self.cur:
+            return 1
+        return self.last_price.get(f"{asset}/{self.cur}", 0)
 
-        Single-currency slice: WUI == CUR:ALD, so no FX conversion is needed.
+    def pool_value(self, pool: "LendingPool") -> int:
+        """Total claimable value of a lending pool in CUR (doc 09 §貸借プール).
+
+        = (on-ledger principal + lent-out principal) marked + any retained interest (held in CUR).
+        Suppliers' shares divide this; it nets against borrowers' position debts system-wide.
+        """
+        pe = pool.entity_id
+        units = self.ledger.get(pe, pool.asset) + pool.borrowed
+        value = units * self.mark_price(pool.asset)
+        if pool.asset != self.cur:
+            value += self.ledger.get(pe, self.cur)      # interest accrues to the pool in CUR
+        return value
+
+    def net_worth(self, e: EntityId) -> int:
+        """NAV (doc 08 8.8 / doc 11 11.9.2): marked ledger balances + lending/AMM pool-share
+        claims − margin-position debts (collateral is already in the ledger balances).
+
+        Single-currency slice: WUI == CUR:ALD, so no FX conversion is needed. Pool-share claims
+        and position debts net out across entities, so total NAV conserves (doc 00 0.17).
         """
         nw = self.cash(e)
         for b in self.bonds:
@@ -107,7 +137,33 @@ class StateStore:
                 continue   # bonds/equities already marked above (avoid double counting)
             if pair.base != self.cur:
                 nw += self.ledger.get(e, pair.base) * self.last_price.get(pair.pair_id, 0)
+        # lending-pool supplier claims (doc 09 §貸借プール)
+        for pool in self.lending_pools.values():
+            if pool.total_shares > 0 and e in pool.shares:
+                nw += self.pool_value(pool) * pool.shares[e] // pool.total_shares
+        # AMM LP claims (doc 09 9.7)
+        for amm in self.amm_pools.values():
+            if amm.total_shares > 0 and e in amm.shares:
+                value = amm.r_base * self.mark_price(amm.base) + amm.r_quote
+                nw += value * amm.shares[e] // amm.total_shares
+        # margin-position liabilities (doc 09 §証拠金): subtract borrowed value + accrued interest
+        for pos in self.positions:
+            if pos.entity == e:
+                base = pos.pair_id.split("/", 1)[0]
+                nw -= pos.borrowed_value(self.mark_price(base)) + pos.accrued_interest
         return nw
+
+    def next_position_id(self) -> str:
+        """Allocate a deterministic, monotonic position id ``POS:NNNNNN`` (doc 00 0.3)."""
+        pid = f"POS:{self.position_seq:06d}"
+        self.position_seq += 1
+        return pid
+
+    def next_liquidation_id(self) -> str:
+        """Allocate a deterministic, monotonic liquidation id ``LIQ:NNNNNN`` (doc 00 0.3)."""
+        lid = f"LIQ:{self.liq_seq:06d}"
+        self.liq_seq += 1
+        return lid
 
     def distributable_profit(self, firm: EntityId) -> int:
         """Retained earnings backed by cash = cash above paid-in capital (doc 11 11.6.2)."""

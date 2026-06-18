@@ -1,10 +1,8 @@
-"""Engine-level market behaviors: resting GTC book, market buys, FX fee (doc 09)."""
+"""Engine-level market behaviors: resting GTC book, market buys, no-fee settlement (doc 09)."""
 from finbox.agents.scripted import ProtoOrder
-from finbox.core.enums import MarketKind, OrderType, Side, TIF
-from finbox.core.ids import AssetId
+from finbox.core.enums import OrderType, Side, TIF
 from finbox.engine import SkeletonEngine
 from finbox.init import SkeletonConfig, genesis
-from finbox.market.types import TradingPair
 
 
 def _setup():
@@ -47,13 +45,16 @@ def test_market_buy_clears_and_is_cash_bounded():
     assert s.cash(inv) >= 0              # never negative
 
 
-def test_fx_pair_uses_lower_fee():
+def test_no_trade_fee_to_exchange():
+    # fees are fully removed (doc 09 9.6.1): a cleared trade transfers nothing to EXCH
     c, s, e = _setup()
-    goods = s.pairs[f"{s.food}/{s.cur}"]
-    fx = TradingPair(s.cur, AssetId.cur("BOR"), MarketKind.FX)
-    assert e._fee_bps(goods) == c.fee_rate_bps
-    assert e._fee_bps(fx) == c.fx_fee_rate_bps
-    assert e._band_bps(fx) == c.price_band_fx_bps
+    inv = s.investors[0]
+    food_pair = s.pairs[f"{s.food}/{s.cur}"]
+    exch0 = s.ledger.get(s.exch, s.cur)
+    e.run_turn([ProtoOrder(inv, food_pair, Side.BUY, OrderType.LIMIT,
+                           s.last_price[food_pair.pair_id] + 100, 2)])
+    assert s.food_qty(inv) > 0                       # the buy cleared
+    assert s.ledger.get(s.exch, s.cur) == exch0      # EXCH collected no fee
 
 
 def test_currency_conserved_with_market_and_resting():
