@@ -34,6 +34,11 @@ def canonical_bytes(store: StateStore) -> bytes:
     for entity in sorted(store.deceased, key=str):
         parts.append(f"dead|{entity}")
 
+    # authoritative per-entity roles (doc 00 0.14, doc 06 6.1): part of the snapshot
+    for entity in sorted(store.roles, key=str):
+        rs = ",".join(sorted(r.value for r in store.roles[entity]))
+        parts.append(f"role|{entity}|{rs}")
+
     for firm in sorted(store.firms):
         parts.append(f"cap|{firm}|{store.firms[firm].capacity}|{store.firms[firm].state.value}")
 

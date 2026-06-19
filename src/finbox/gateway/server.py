@@ -76,7 +76,8 @@ class Gateway:
     def register_player(self, display_name: str, country: str = "ALD", base_currency: str | None = None,
                         endowment_basis: str | None = None, requested_roles=("INVESTOR",)) -> tuple[EntityId, str]:
         roles = self._grant_roles(requested_roles)
-        ent = self.engine.onboard_player(self.config.investor_start_cash)   # engine is the sole writer (doc 02 2.1)
+        # the engine is the sole writer of both the ledger and the role taxonomy (doc 02 2.1)
+        ent = self.engine.onboard_player(self.config.investor_start_cash, roles=roles)
         api_key = f"key-{ent}"
         self.api_keys[api_key] = {
             "entity": ent, "roles": set(roles), "display_name": display_name, "country": country,

@@ -38,6 +38,14 @@ def test_register_player_numbered_from_zero_and_endowed():
     assert gw.store.cash(ent) == gw.config.investor_start_cash
 
 
+def test_player_role_recorded_in_engine_state():
+    """Onboarding writes the player's role into authoritative engine state, not just the JWT (#7)."""
+    from finbox.core.enums import Role
+    gw = make_gateway()
+    ent, _ = gw.register_player("Hina", requested_roles=("INVESTOR",))
+    assert Role.INVESTOR in gw.store.entity_roles(ent)
+
+
 def test_two_layer_auth_session_required():
     gw = make_gateway()
     with pytest.raises(Unauthenticated):

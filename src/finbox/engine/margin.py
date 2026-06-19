@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from ..core import fixed
 from ..core.enums import (
-    Cause, MarketKind, OrderType, PositionSide, Side, TIF, TurnPhase, is_margin_eligible_base)
+    AMMInvariant, Cause, MarketKind, OrderType, PositionSide, Side, TIF, TurnPhase,
+    is_margin_eligible_base)
 from ..core.ids import EntityId
 from ..domain.margin import Position, maintenance_margin_bps
 from ..ledger import LedgerLine
@@ -248,10 +249,27 @@ class MarginEngine:
                 continue
             base_slice = max(0, amm.r_base // (2 * levels))         # half the base reserve, laddered
             quote_slice = max(0, amm.r_quote // (2 * levels))
+            k = amm.r_base * amm.r_quote                            # constant-product invariant x*y=k
+            concentrated = amm.invariant is AMMInvariant.CONCENTRATED
+            half = amm.spread_bps // 2
             for i in range(1, levels + 1):
-                off = amm.spread_bps // 2 + (i - 1) * max(1, amm.spread_bps)
-                ask = mid + fixed.ceildiv(mid * off, fixed.BPS_DEN)
-                bid = max(1, mid - (mid * off) // fixed.BPS_DEN)
+                if concentrated:
+                    # CONCENTRATED (doc 09 9.7.7): a tight band around mid (narrow per-level steps),
+                    # liquidity concentrated near parity -- for low-vol pairs such as FX.
+                    off = half + (i - 1) * max(1, half)
+                    ask = mid + fixed.ceildiv(mid * off, fixed.BPS_DEN)
+                    bid = max(1, mid - (mid * off) // fixed.BPS_DEN)
+                else:
+                    # CONST_PRODUCT (doc 09 9.7.7): the marginal price k/x^2 walks up/down the x*y=k
+                    # curve as the pool sells/buys base, so price impact emerges from reserve depth
+                    # (thinner pools and volatile EQ/COMM quote wider). Spread is added on top.
+                    xa = max(1, amm.r_base - (i - 1) * base_slice)
+                    xb = amm.r_base + (i - 1) * base_slice
+                    ask = k // (xa * xa) + fixed.ceildiv(mid * half, fixed.BPS_DEN)
+                    bid = max(1, k // (xb * xb) - (mid * half) // fixed.BPS_DEN)
+                ask = max(ask, mid + 1)                             # strictly richer than mid
+                if mid > 1:
+                    bid = min(bid, mid - 1)                         # strictly cheaper than mid
                 if base_slice > 0:
                     out.append(Order(order_id=f"AMM:{tick}:{seq:04d}", entity_id=amm.entity_id,
                                      pair_id=pid, side=Side.SELL, order_type=OrderType.LIMIT,

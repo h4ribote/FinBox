@@ -1,4 +1,5 @@
 """M4 integration: a multi-firm supply chain runs and stays consistent."""
+from finbox.core.enums import Role
 from finbox.engine import SkeletonEngine, run_skeleton
 from finbox.init import SkeletonConfig, genesis
 
@@ -7,6 +8,14 @@ def test_runs_and_advances_tick():
     store, hashes = run_skeleton(SkeletonConfig(), 96)
     assert store.tick == 96
     assert len(hashes) == 96
+
+
+def test_genesis_assigns_authoritative_roles():
+    """Every agent/investor/politician carries a role in authoritative engine state (doc 06 6.1, #7)."""
+    s = genesis(SkeletonConfig())
+    assert all(s.entity_roles(a) for a in s.agents)                       # workers: a labor role each
+    assert all(Role.INVESTOR in s.entity_roles(i) for i in s.investors)
+    assert all(Role.POLITICIAN in s.entity_roles(p) for p in s.politicians)
 
 
 def test_currency_conserved_every_turn():

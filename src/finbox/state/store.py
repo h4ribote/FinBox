@@ -32,6 +32,9 @@ class StateStore:
     cb: EntityId
     exch: EntityId
     region_cap: dict = field(default_factory=dict)   # region_cap[asset_id][region_id] (doc 04 4.3.1)
+    # authoritative per-entity role taxonomy (doc 00 0.14, doc 06 6.1): the engine -- not the gateway
+    # -- is the single source of truth for who holds which role(s). EntityId -> tuple[Role, ...]
+    roles: dict = field(default_factory=dict)
     last_price: dict[str, int] = field(default_factory=dict)
     # agent need states (doc 05 5.2), held as fixed-point x1000 (0..100000); engine-only
     satiety: dict[EntityId, int] = field(default_factory=dict)
@@ -90,6 +93,10 @@ class StateStore:
 
     def labor_assets(self) -> set[AssetId]:
         return set(self.agent_labor.values())
+
+    def entity_roles(self, e: EntityId) -> tuple:
+        """Roles held by an entity (doc 00 0.14); empty tuple if none recorded."""
+        return self.roles.get(e, ())
 
     def region_cap_for(self, asset: AssetId, region: str) -> int:
         """Per-region extraction cap region_cap[asset_id][region_id] (doc 04 4.3.1)."""

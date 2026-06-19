@@ -35,6 +35,18 @@ def test_genesis_wires_world_and_region_caps():
     assert s.region_cap_for(grain, region0) == expect
 
 
+def test_worldgen_produces_unowned_ocean_cells():
+    """Pure-ocean cells are terrain_locked + unowned; territory + unowned conserves (doc 04 4.7/4.8, #16)."""
+    cells = world.generate_world(0xF1B0C0DE)
+    ocean = [c for c in cells.values() if c.terrain_locked]
+    assert ocean                                                  # some pure-ocean cells exist
+    assert all(c.owner is None and c.base_population == 0 for c in ocean)
+    assert all(world.cell_potential(c, "grain") == 0 for c in ocean)   # ocean produces nothing
+    owned = sum(1 for c in cells.values() if c.owner is not None)
+    unowned = sum(1 for c in cells.values() if c.owner is None)
+    assert owned + unowned == 9216                                # territory conservation (doc 04 4.8)
+
+
 def test_population_conserved_under_migration():
     c = SkeletonConfig()
     s = genesis(c)

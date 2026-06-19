@@ -15,7 +15,7 @@ from dataclasses import replace
 from ..agents.scripted import generate_orders
 from ..core import fixed
 from ..core.enums import (
-    Cause, FirmLifecycle, OrderType, Side, TIF, TradeMode, TurnPhase, is_perishable)
+    Cause, FirmLifecycle, OrderType, Role, Side, TIF, TradeMode, TurnPhase, is_perishable)
 from ..core.ids import AssetId, EntityId
 from ..core.rng import STREAM_DEMOGRAPHY, rng as derive_rng
 from ..core.time import Calendar
@@ -39,16 +39,19 @@ class SkeletonEngine:
         self.margin = MarginEngine(self)   # 信用取引: lending, positions, forced liquidation (doc 09)
         self._next_player = 0          # per-room PLAYER numbering from 0 (doc 13 13.3.2)
 
-    def onboard_player(self, endowment: int) -> EntityId:
-        """Engine-owned onboarding: assign a PLAYER id and post the genesis endowment (doc 13 13.3.1).
+    def onboard_player(self, endowment: int, roles=()) -> EntityId:
+        """Engine-owned onboarding: assign a PLAYER id, post the genesis endowment, and record the
+        player's authoritative role(s) in engine state (doc 13 13.3.1, doc 06 6.1).
 
-        The engine is the single writer of the ledger (doc 02 2.1); the gateway delegates here
-        rather than posting to the ledger itself.
+        The engine is the single writer of the ledger AND of the role taxonomy (doc 02 2.1); the
+        gateway delegates here rather than holding role state itself.
         """
         ent = EntityId.player(self._next_player)
         self._next_player += 1
         self.s.ledger.post(self.s.tick, TurnPhase.INIT, Cause.GENESIS,
                            [LedgerLine(ent, self.s.cur, endowment)])
+        if roles:
+            self.s.roles[ent] = tuple(Role(r) for r in roles)   # normalize tokens -> Role enum
         return ent
 
     def run_turn(self, external_protos=None) -> None:

@@ -159,6 +159,26 @@ def test_amm_provides_liquidity_and_conserves():
     assert s.ledger.total_supply(pair.base) == eq0
 
 
+def test_amm_invariant_shapes_the_ladder():
+    """CONCENTRATED and CONST_PRODUCT quote different curves for the same spread (doc 09 9.7.7, #13)."""
+    from finbox.core.enums import AMMInvariant
+    c = SkeletonConfig(amm_enabled=True)
+    s = genesis(c)
+    e = SkeletonEngine(s, c)
+    pair = _eq_pair(s)                                       # equity pool -> CONST_PRODUCT at genesis
+    amm = s.amm_pools[pair.pair_id]
+
+    def asks():
+        return sorted(o.limit_price for o in e.margin.amm_orders(1)
+                      if o.pair_id == pair.pair_id and o.side is Side.SELL)
+
+    asks_cp = asks()
+    amm.invariant = AMMInvariant.CONCENTRATED
+    asks_conc = asks()
+    assert asks_cp != asks_conc                              # the invariant actually changes the curve
+    assert asks_cp[-1] > asks_conc[-1]                       # const-product widens out far more
+
+
 def test_determinism_with_amm_enabled():
     from finbox.state import state_hash
 

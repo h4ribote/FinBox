@@ -5,7 +5,7 @@ firm equity issued at genesis (the genesis mint point, doc 00 0.10).
 """
 from __future__ import annotations
 
-from ..core.enums import AMMInvariant, Cause, Industry, MarketKind, TurnPhase
+from ..core.enums import AMMInvariant, Cause, Industry, MarketKind, Role, TurnPhase
 from ..core.ids import AssetId, EntityId, RegionId
 from ..domain import naming, needs
 from ..domain.finance import Bond, Equity
@@ -18,6 +18,8 @@ from ..state import world
 from .config import SkeletonConfig
 
 _LABOR_KINDS = ("farm", "factory", "build")
+# labor-kind -> worker Role (doc 00 0.14 / doc 06 6.10.1); roles are authoritative engine state
+_LABOR_ROLE = {"farm": Role.FARMER, "factory": Role.FACTORY_WORKER, "build": Role.BUILDER}
 
 
 def genesis(config: SkeletonConfig) -> StateStore:
@@ -41,6 +43,12 @@ def genesis(config: SkeletonConfig) -> StateStore:
     investors = tuple(EntityId.agent(config.n_agents + 1 + j) for j in range(config.n_investors))
     base = config.n_agents + config.n_investors
     politicians = tuple(EntityId.agent(base + 1 + j) for j in range(config.n_politicians))
+
+    # authoritative per-entity roles (doc 00 0.14, doc 06 6.1/6.10.1): workers by labor kind,
+    # investors INVESTOR, politicians POLITICIAN. The engine owns this, not the gateway.
+    roles: dict = {a: (_LABOR_ROLE[_LABOR_KINDS[i % len(_LABOR_KINDS)]],) for i, a in enumerate(agents)}
+    roles.update({inv: (Role.INVESTOR,) for inv in investors})
+    roles.update({pol: (Role.POLITICIAN,) for pol in politicians})
 
     agri, manuf, constr = EntityId.firm(1), EntityId.firm(2), EntityId.firm(3)
     region0 = RegionId.of("ALD", 0)
@@ -150,7 +158,7 @@ def genesis(config: SkeletonConfig) -> StateStore:
     store = StateStore(
         ledger=ledger, tick=0, master_seed=config.master_seed,
         cur=cur, food=food, build=build, pairs=pairs,
-        agents=agents, agent_labor=agent_labor, firms=firms,
+        agents=agents, agent_labor=agent_labor, roles=roles, firms=firms,
         gov=gov, cb=cb, exch=exch,
         region_cap={food: {region0: config.region_cap_food}},
         last_price=last_price,

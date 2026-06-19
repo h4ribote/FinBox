@@ -98,7 +98,11 @@ def _gen_cell(gens, cc, lat_row, idx, x, y) -> Cell:
     gx, gy = region_x * CELL_COLS + x, region_y * CELL_ROWS + y
     edge = gx == 0 or gy == 0 or gx == REGION_COLS * CELL_COLS - 1 or gy == REGION_ROWS * CELL_ROWS - 1
     roll = _q(g, 0, 99)
-    if edge and roll < 55:
+    if edge and roll < 22:
+        # pure ocean: deep water beyond the coast -- not buildable and unowned (doc 04 4.2/4.7 step 5).
+        # Represented as COAST terrain with terrain_locked=True (no OCEAN terrain token, doc 04 4.2.1).
+        terrain, terrain_locked = Terrain.COAST, True
+    elif edge and roll < 55:
         terrain, terrain_locked = Terrain.COAST, False
     elif elevation > 6000:
         terrain, terrain_locked = Terrain.MOUNTAIN, False
@@ -175,6 +179,8 @@ def _gen_cell(gens, cc, lat_row, idx, x, y) -> Cell:
 
 def cell_potential(cell: Cell, crop: str) -> int:
     """Per-cell agricultural potential for a crop (doc 04 4.3.1), season/weather factor 1."""
+    if cell.terrain_locked:
+        return 0                                          # pure ocean produces nothing (doc 04 4.2)
     fert = cell.fertility.get(crop, 0)
     infra_mult = 1000 + cell.infrastructure // 2          # 1.0 .. 1.5 (x1000)
     return fert * (2000 - cell.pollution) // 2000 * infra_mult // 1000
