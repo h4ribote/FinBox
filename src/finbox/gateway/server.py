@@ -225,7 +225,9 @@ class Gateway:
         Pool operations are confirmed before board-clearing (doc 09 §プール操作の順序).
         """
         claims = self._auth(token)
-        if "trade" not in claims["scope"]:
+        # lending.supply/withdraw is a capital-role action (doc 06 §6.9 matrix): only ENTREPRENEUR /
+        # INVESTOR / MARKET_MAKER / YIELD_INVESTOR / ARBITRAGEUR / AMM may supply or redeem pool shares.
+        if not (set(claims["roles"]) & CAPITAL_ROLES):
             raise Forbidden("role_not_permitted")
         if asset_id not in self.store.lending_pools:
             raise NotFound("unknown pool")
@@ -389,7 +391,7 @@ def create_app(gateway: Gateway):
         display_name: str
         country: str = "ALD"
         base_currency: str | None = None
-        endowment_basis: str = "WUI"
+        endowment_basis: str | None = None    # None -> fall back to config.endowment_basis (doc 16 §16.7.4)
         requested_roles: list[str] = ["INVESTOR"]
 
     class SessionReq(BaseModel):

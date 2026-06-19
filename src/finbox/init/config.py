@@ -137,6 +137,11 @@ class SkeletonConfig:
     equity_par: int = 1000
     equity_dividend_bps: int = 200      # profit payout ratio in bps (doc 11 11.6.2 payout_ratio)
     cb_policy_rate_bps: int = 250       # doc 16 fiscal.policy_rate_bps
+    # policy_rate SCALAR aggregation bounds (doc 11 §11.10 POLICY_RATE_MIN/MAX/TICK, doc 12 §12.3).
+    # The floor is negative: the engine must admit the documented negative policy rates.
+    policy_rate_min_bps: int = -100     # -1.00% floor (negative rates allowed)
+    policy_rate_max_bps: int = 4000     # 40.00% ceiling
+    policy_rate_tick_bps: int = 25      # 25 bps grid
 
     # ML reward coefficients (doc 07 §7.5 / doc 16 §16.15.5). The WORKER reward (7.5.1) is the
     # weighted needs sum + b_alive + w_wealth·tanh(ΔW/scale_w) − D_death·1[died]. In this

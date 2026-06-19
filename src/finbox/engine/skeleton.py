@@ -74,9 +74,6 @@ class SkeletonEngine:
             {"entity": str(p.entity), "kind": "ORDER", "pair": p.pair.pair_id,
              "side": p.side.value, "qty": p.qty, "mode": p.trade_mode.value} for p in protos]})
 
-        # P4-pre (doc 09 §プール操作の順序): confirm lending-pool deposits/withdrawals before clearing
-        self.margin.process_pool_ops()
-
         orders_by_pair: dict[str, list[Order]] = defaultdict(list)
         reserved_cash: dict = defaultdict(int)
         reserved_sell: dict = defaultdict(int)
@@ -114,6 +111,10 @@ class SkeletonEngine:
             seq += 1
 
         self._govern()            # P3 GOVERN: aggregate politician proposals into policy
+
+        # P4-pre (doc 03 §3.3.5 / doc 09 §プール操作の順序): confirm lending-pool deposits/withdrawals
+        # at the top of P4, strictly after P3 GOVERN and before board-clearing.
+        self.margin.process_pool_ops()
 
         # margin opens (信用取引): borrow from lending pools and inject the opening board orders so
         # they clear on the same board as spot (doc 09 §信用取引), reserved against margin + borrow
@@ -324,7 +325,11 @@ class SkeletonEngine:
             s.policy["min_wage"] = aggregate_scalar(vals, [1] * len(vals), 0, 1_000_000, 1)
         if levers.get("policy_rate"):
             vals = levers["policy_rate"]
-            s.cb_policy_rate_bps = aggregate_scalar(vals, [1] * len(vals), 0, 5000, 25)
+            # canonical SCALAR range [POLICY_RATE_MIN, POLICY_RATE_MAX] = [-100, 4000] bps, tick 25
+            # (doc 11 §11.10, doc 12 §12.3); the floor is negative so the documented negative rates pass.
+            s.cb_policy_rate_bps = aggregate_scalar(vals, [1] * len(vals),
+                                                    c.policy_rate_min_bps, c.policy_rate_max_bps,
+                                                    c.policy_rate_tick_bps)
 
     def _tax(self, spend: dict) -> None:
         s = self.s

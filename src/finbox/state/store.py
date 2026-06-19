@@ -128,7 +128,14 @@ class StateStore:
         nw = self.cash(e)
         for b in self.bonds:
             pid = f"{b.asset_id}/{self.cur}"
-            nw += self.ledger.get(e, b.asset_id) * self.last_price.get(pid, b.face)
+            mark = self.last_price.get(pid, b.face)
+            nw += self.ledger.get(e, b.asset_id) * mark
+            if b.issuer == e:
+                # issuer-side liability (doc 08 8.8.1): the live outstanding face, marked at the same
+                # price holders use, so a bond nets to zero across issuer and holders -> total NAV
+                # conserves world-wide (doc 00 0.17). total_supply tracks live outstanding (the
+                # redemption burn at maturity drops it to 0, clearing the phantom liability).
+                nw -= self.ledger.total_supply(b.asset_id) * mark
         for q in self.equities:
             pid = f"{q.asset_id}/{self.cur}"
             nw += self.ledger.get(e, q.asset_id) * self.last_price.get(pid, q.par)

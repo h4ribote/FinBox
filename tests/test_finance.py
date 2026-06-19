@@ -60,6 +60,24 @@ def test_nav_is_tracked():
     assert s.macro["investor_nav"] > 0
 
 
+def test_issuer_bond_liability_nets_to_zero():
+    """The bond issuer carries outstanding face as a liability so the bond's net contribution
+    to total NAV is zero across issuer and holders (doc 08 8.8.1 / world conservation 00 0.17)."""
+    c = SkeletonConfig()
+    s = genesis(c)
+    bond = s.bonds[0]
+    pid = f"{bond.asset_id}/{s.cur}"
+    mark = s.last_price.get(pid, bond.face)
+    # issuer (GOV) NAV = cash minus the live outstanding face (no other holdings at genesis)
+    assert s.net_worth(s.gov) == s.cash(s.gov) - s.ledger.total_supply(bond.asset_id) * mark
+    # summed across every entity, the bond contributes exactly zero: holders' +qty*mark cancels the
+    # issuer's -outstanding*mark (total holdings == outstanding while the bond is live)
+    everyone = list(s.agents) + list(s.investors) + list(s.politicians) + list(s.firms) + [s.gov, s.cb]
+    bond_in_total_nav = sum(s.qty(e, bond.asset_id) * mark for e in everyone) \
+        - s.ledger.total_supply(bond.asset_id) * mark
+    assert bond_in_total_nav == 0
+
+
 def test_liquidation_distributes_residual_then_burns_equity():
     from finbox.core.enums import FirmLifecycle
     c = SkeletonConfig()
