@@ -77,26 +77,26 @@ flowchart LR
 
 ### 8.4.1 残高と二重仕訳
 
-台帳の状態は `balance[entity_id][asset_id] = 非負整数` ([00 §0.9](00-glossary.md))。存在しないキーは残高 0 とみなす。台帳の状態を変える唯一の手段は **posting (記帳)** であり、すべての posting は **二重仕訳 (double-entry)** で表現される。1件の posting は、ある資産 `asset_id` について借方 (debit, 減少側) 合計と貸方 (credit, 増加側) 合計が一致する仕訳行の集合である。
+台帳の状態は `balance[entity_id][asset_id] = 非負整数` ([00 §0.9](00-glossary.md))。存在しないキーは残高 0 とみなす。台帳の状態を変える唯一の手段は **posting (記帳)** であり、すべての posting は **二重仕訳 (double-entry)** で表現される。1件の posting は、各 `asset_id` についてエンティティごとの符号付き増減 `delta`(借方=正の受取, 貸方=負の払出)を表す仕訳行の集合であり、保存系の cause では当該資産の `Σ delta == 0`(受取合計=払出合計)となる。
 
-正準なデータ構造を擬似コードで示す (詳細スキーマは [15](15-data-model.md))。
+正準なデータ構造を擬似コードで示す (正準スキーマは [15 §15.6](15-data-model.md)、これと完全一致させること)。
 
 ```
 LedgerLine:
-  asset_id: str
-  from_entity: entity_id | MINT          # MINT は新規生成 (発行体側の起点)
-  to_entity:   entity_id | BURN          # BURN は消滅 (発行体側の終点)
-  quantity:    int  (> 0)
+  entity_id: entity_id                   # 主体
+  asset_id:  str                         # 資産
+  delta:     int  (≠ 0)                  # 増減 (借方=正の受取, 貸方=負の払出)
 
 Posting:
   posting_id: int                        # 単調増加の通し番号
+  cause:      Cause                       # 原因種別 (8.4.2)
+  cause_ref:  str?                        # 原因の参照 (trade_id/production_id/loan_id/liquidation_id …、8.4.2)
   tick:       int                        # 記帳されたターン
-  phase:      "P4"|"P5"|"P6"|"P7"|"P8"   # どのフェーズの記帳か
-  cause:      Cause                       # 原因識別子 (8.4.2)
-  lines:      LedgerLine[]                # 1本以上の仕訳行
+  phase:      "P0".."P9"                 # どのフェーズの記帳か
+  lines:      LedgerLine[]               # 1本以上の仕訳行
 ```
 
-各 `Posting` は不変条件として、含まれる各 `asset_id` ごとに「`from_entity` が実体エンティティである行の `quantity` 合計」と「`to_entity` が実体エンティティである行の `quantity` 合計」が、`MINT`/`BURN` 行を除いて一致しなければならない (8.6 の検証)。`MINT` を起点とする行はその資産の総量を増やし、`BURN` を終点とする行は減らす。それ以外の通常移転は総量を保存する。
+各 `Posting` は不変条件として、含まれる各 `asset_id` について符号付き増減の総和 `Σ delta == 0`(保存)でなければならない (8.6 の検証)。ただし生成/消滅点の cause (`MINT`/`BURN`/`PRODUCTION`/`CONSUMPTION`/`GENESIS`/`MILITARY`/`EXPIRE`/`REDEEM`/`LIQUIDATION`) では当該資産の総和が非ゼロとなることを許容する: 通貨発行 (`MINT`)・生産 (`PRODUCTION`) は総量を増やし、バーン (`BURN`)・消費 (`CONSUMPTION`)・失効 (`EXPIRE`) は減らす。それ以外の通常移転、および保存系の貸借/AMM cause (`POOL_SUPPLY`/`POOL_WITHDRAW`/`LOAN`/`REPAY`/`INTEREST`/`LIQUIDATION_PENALTY`/`HAIRCUT`/`AMM_SUPPLY`/`AMM_WITHDRAW`) は各資産で総和ゼロ (総量保存) を強制する。各ラインの適用後 `balance ≥ 0` でなければ posting 全体を棄却する ([00 §0.10, §0.17](00-glossary.md))。
 
 ### 8.4.2 原因識別子 (Cause)
 

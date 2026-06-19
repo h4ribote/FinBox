@@ -121,8 +121,11 @@ erDiagram
 | `owner` | `id<Country>` | 外部キー → Country | 領有国。軍事 (P8) で変化しうる ([12](12-politics-and-government.md)) |
 | `region_id` | `id<Region>` | 外部キー → Region | 所属地域 |
 | `terrain` | `enum<Terrain>` | `{PLAIN,FOREST,MOUNTAIN,DESERT,COAST,TUNDRA,SWAMP}`(7値) | 地形 ([04 §4.2.1](04-world-and-geography.md))。海洋は `terrain_locked`/`COAST`、都市は `development_level` で表現し terrain に含めない |
-| `resource_endowment` | `map<asset_id, uint>` | 値 `≥ 0` | マスの一次資源賦存 (抽出潜在量) |
-| `infrastructure` | `uint` | `0..100` | インフラ水準 (物流・生産効率に影響) |
+| `fertility` | `map<asset_id, uint>` | 作物→`0..1000` | 作物別の農業ポテンシャル ([04 §4.3](04-world-and-geography.md)) |
+| `mineral_deposits` | `map<asset_id, {stock:uint, grade:uint}>` | `grade 0..1000` | 鉱床の残存埋蔵量と品位 ([04 §4.3](04-world-and-geography.md)) |
+| `forest_stock` | `uint` | `0..1_000_000` | 立木在庫 (再生、[04 §4.3](04-world-and-geography.md)) |
+| `water` | `uint` | `0..1000` | 淡水利用可能度 (灌漑・飲料・工業用水) |
+| `infrastructure` | `uint` | `0..1000` | インフラ水準 (物流・生産効率に影響) |
 | `development_level` | `uint` | `0..1000` | 開発度 (設備立地容量・需要密度。都市性の表現; [04 §4.2.1](04-world-and-geography.md)) |
 | `terrain_locked` | `bool` | — | 建設不可フラグ (COAST 以外の純海洋セル; [04 §4.2.1](04-world-and-geography.md)) |
 | `population` | `uint` | — | 居住エージェント数 (派生) |
@@ -212,7 +215,7 @@ erDiagram
 | `ceo` | `id<Agent>` | `ENTREPRENEUR` ロール | 経営者 |
 | `incorporated_tick` | `uint` | — | 設立 tick |
 | `display_name` | `str` | 一意 (国群内) | 企業の人間可読名 (フレーバー)。設立時指定 ([14 §14.5.5](14-api-reference.md)) または プール割当 ([16 §16.14](16-configuration-and-initialization.md))。正準IDは `entity_id` |
-| `status` | `enum<FirmStatus>` | `{ACTIVE,SUSPENDED,LIQUIDATING,DISSOLVED}` | ライフサイクル ([10](10-industry-and-production.md)) |
+| `state` | `enum<FirmLifecycle>` | `{FOUNDING,OPERATING,EXPANDING,RAISING,DISTRIBUTING,INSOLVENT,LIQUIDATING}` | ライフサイクル状態機械 ([10 §10.8](10-industry-and-production.md)) |
 
 在庫・現金は台帳残高 (`balance[FIRM:*][*]`) として保持し、Firm に重複保持しない。
 
@@ -234,7 +237,7 @@ erDiagram
 | --- | --- | --- | --- |
 | `entity_id` | `str` | `CB:<country_code>` | 継承 |
 | `country_code` | `id<Country>` | 1:1 | 管轄国 |
-| `policy_rate_bps` | `int` | `≥ 0` | 政策金利 (P3 で集約確定; [00 §0.12](00-glossary.md)) |
+| `policy_rate_bps` | `int` | `-100..4000` bps | 政策金利 (P3 で集約確定; [00 §0.12](00-glossary.md), [11 §11.10](11-finance-and-instruments.md)) |
 | `omo_target` | `int` | — | 公開市場操作の純注入目標 (自国通貨; 正=供給) |
 | `reserve_holdings` | `map<asset_id, uint>` | — | 保有準備資産 (台帳に反映, 重複保持しない) |
 
@@ -579,7 +582,7 @@ P3 集約: SCALAR=平均→クランプ→丸め、BINARY=平均 `≥0.5`、CATE
 | `cpi` | `uint` | `≥ 0` | 物価指数 (genesis=10000 基準) |
 | `inflation_bps` | `int` | — | 前ターン比インフレ (bps) |
 | `unemployment_bps` | `uint` | `0..10000` | 失業率 |
-| `policy_rate_bps` | `int` | `≥ 0` | 政策金利 |
+| `policy_rate_bps` | `int` | `-100..4000` bps | 政策金利 ([11 §11.10](11-finance-and-instruments.md)) |
 | `fx_rates` | `map<pair_id, uint>` | — | 対基準通貨レート |
 | `gov_debt`,`debt_to_gdp_bps` | `uint` | `≥ 0` | 政府債務・対GDP比 |
 | `fiscal_balance`,`trade_balance` | `int` | — | 財政収支・貿易収支 |

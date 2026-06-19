@@ -100,7 +100,7 @@ flowchart TD
 | `fiscal.reserve_ratio_bps` | 1000 | 法定準備率初期 (10.00%) |
 | `fiscal.gov_debt_ceiling_ratio_bps` | 25000 | 国債発行枠初期 (対GDP 250.00%、`debt_ceiling_ratio = 2.5` 相当 [12](12-politics-and-government.md))。P3 で調整 |
 | `fiscal.unemployment_benefit_per_turn` | 30 | 失業給付 (1ターン, minor 単位の現地通貨建て名目額) |
-| `fiscal.discount_rate_gamma` | 0.995 | 報酬割引率 γ ([07](07-machine-learning.md))。年率換算 `γ^48 ≈ 0.786` |
+| `fiscal.discount_rate_gamma` | 0.997 | 報酬割引率 γ の既定プリセット ([07 §7.5.9](07-machine-learning.md)、§16.15.5 `ml.gamma` と同値)。年率換算 `γ^48 ≈ 0.865` |
 
 - すべての利息・クーポンは単利按分 `r_turn = r_annual / 48`、成長指標は複利 `g_turn = (1+g)^(1/48) - 1` を用いる ([0.7](00-glossary.md))。
 - `discount_rate_gamma` は学習報酬の割引であり、本書では既定値のみ定義する。報酬関数の詳細は [07](07-machine-learning.md)。
@@ -378,7 +378,7 @@ flowchart TD
 - **整合検証**: 読込時に以下を検証し、違反は起動拒否とする。
   - `regions_per_country == region_grid[0] × region_grid[1]` かつ `cells_per_region == cell_grid[0] × cell_grid[1]`。
   - ロール分布の合計が `agents_per_country` を超えない (労働者系で残数を充足)。
-  - 各税率, `policy_rate_bps` が `[0, 上限]` レンジ内。
+  - 各税率が `[0, 上限]` レンジ内。`policy_rate_bps` が `[POLICY_RATE_MIN, POLICY_RATE_MAX] = [-100, 4000]` bps レンジ内 (負金利を許容; [11 §11.10](11-finance-and-instruments.md), [12 §12.3](12-politics-and-government.md))。
   - `minor_unit ≥ 1` かつ価格・初期残高がすべて整数 ([0.8](00-glossary.md))。
   - 信用取引 (16.16): `0 < margin.maintenance_margin[class] < margin.initial_margin ≤ 10000`(維持<初期、いずれも bps)、`0 ≤ margin.liquidation_penalty`、`0 < margin.close_factor ≤ 10000`、`margin.liquidation_max_rounds ≥ 1`。
   - 貸借プール (16.16): `0 ≤ lending.reserve_factor < 10000`、`0 ≤ lending.u_kink ≤ 10000`、`lending.base_rate / slope1 / slope2 ≥ 0`、`lending.genesis_supply ≥ 0`、`insurance.genesis_seed ≥ 0`。
